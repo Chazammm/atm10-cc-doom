@@ -7,7 +7,11 @@ local WAD_DATA = nil
 
 local function isDoomWadPath(path)
     path = tostring(path or ""):lower():gsub("\\", "/")
-    return path:match("doom1%.wad$") ~= nil or path:match("doom%.wad$") ~= nil
+    -- IMPORTANT: only expose the SHAREWARE IWAD name.
+    -- If we also pretend "doom.wad" exists, DOOM detects itself as
+    -- Registered and then asks for textures/lumps which are not in
+    -- the shareware IWAD (for example SW1BLUE).
+    return path:match("doom1%.wad$") ~= nil
 end
 
 local function ensureWad()
