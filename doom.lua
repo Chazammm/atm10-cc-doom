@@ -313,15 +313,35 @@ end
 
 RISCV.syscalls[7] = function(self, _path, mode) -- access
     local path = ffistring(self.mem + _path)
-    local exists, ro
-    if isDoomWadPath(path) then
-        exists, ro = true, true
-    else
-        exists = fs.exists(path)
-        ro = fs.isReadOnly(path)
+    local p = tostring(path or ""):lower():gsub("\\", "/")
+
+    -- Force deterministic IWAD detection.
+    -- DOOM probes several filenames in order. Only doom1.wad should
+    -- exist for our shareware setup; all registered/commercial IWAD
+    -- names must report "missing", even if something odd is present
+    -- on the CC filesystem.
+    local knownIWAD = {
+        ["doom2f.wad"] = true,
+        ["doom2.wad"] = true,
+        ["plutonia.wad"] = true,
+        ["tnt.wad"] = true,
+        ["doomu.wad"] = true,
+        ["doom.wad"] = true,
+        ["doom1.wad"] = true,
+    }
+
+    local leaf = p:match("([^/]+)$") or p
+    if knownIWAD[leaf] then
+        if leaf == "doom1.wad" then
+            return 0
+        else
+            return 0xFFFFFFFF
+        end
     end
+
+    local exists = fs.exists(path)
+    local ro = fs.isReadOnly(path)
     local res = (exists and not (bit32.btest(mode, 2) and ro)) and 0 or 0xFFFFFFFF
-    --print("access " .. path .. " (" .. mode .. "): " .. res)
     return res
 end
 
