@@ -1043,6 +1043,13 @@ for i, v in ipairs(args) do
     fficopy(RISCV.mem + pos, v)
     pos = pos + #v + 1
 end
+-- IMPORTANT: preload the WAD before the RISC-V CPU coroutine starts.
+-- CC:Tweaked's http.get() waits for HTTP events. If we call it from inside
+-- the emulator coroutine, those events are not forwarded back into that
+-- coroutine and the program appears to freeze on "Downloading doom1.wad...".
+-- Loading here at top-level avoids that deadlock.
+ensureWad()
+
 local file = fs.open(shell.resolve("rvdoom.elf"), "rb")
 local elf = file.readAll()
 file.close()
