@@ -422,12 +422,17 @@ else
     end
 
     local function nearestColor(palette, color)
-        local nearest = {dist = math.huge}
+        local bestN, bestDist = 1, math.huge
         for i,v in ipairs(palette) do
-            local dist = math.sqrt((v[1] - color[1])^2 + (v[2] - color[2])^2 + (v[3] - color[3])^2)
-            if dist < nearest.dist then nearest = {n = i, dist = dist} end
+            local dr = v[1] - color[1]
+            local dg = v[2] - color[2]
+            local db = v[3] - color[3]
+            local dist = dr*dr + dg*dg + db*db
+            if dist < bestDist then
+                bestN, bestDist = i, dist
+            end
         end
-        return nearest.n
+        return bestN
     end
 
     RISCV.syscalls[10] = function(self, mode) -- setGraphicsMode
@@ -446,37 +451,23 @@ else
             paletteColors[i] = color
             coltab[i+1] = color
         end
+        -- The original DOOM-CC fallback refines the 16 colors with up to
+        -- 100 k-means passes. On normal in-game CC:Tweaked this can make the
+        -- first frame appear to hang for a very long time.
+        -- Median-cut alone is much faster and still gives a solid 16-color result.
         local centers = medianCut(coltab, 16)
-        local buckets = {}
-        -- loop
-        for _ = 1, 100 do
-            local changed = false
-            for i = 1, 16 do buckets[i] = {} end
-            -- place all colors in nearest bucket
-            for i = 0, 255 do
-                local closest = nearestColor(centers, paletteColors[i])
-                buckets[closest][#buckets[closest]+1] = paletteColors[i]
-            end
-            -- generate new centroids
-            local newColors = {}
-            for i = 1, 16 do
-                local sum = {0, 0, 0}
-                local count = 0
-                for _, v in ipairs(buckets[i]) do
-                    sum[1] = sum[1] + v[1]
-                    sum[2] = sum[2] + v[2]
-                    sum[3] = sum[3] + v[3]
-                    count = count + 1
-                end
-                newColors[i] = {math.floor(sum[1] / count + 0.5), math.floor(sum[2] / count + 0.5), math.floor(sum[3] / count + 0.5)}
-                if newColors[i][1] ~= centers[i][1] or newColors[i][2] ~= centers[i][2] or newColors[i][3] ~= centers[i][3] then changed = true end
-            end
-            centers = newColors
-            if not changed then break end
+
+        for i = 1, 16 do
+            term.setPaletteColor(
+                2^(i-1),
+                centers[i][1] / 255,
+                centers[i][2] / 255,
+                centers[i][3] / 255
+            )
         end
-        for i = 1, 16 do term.setPaletteColor(2^(i-1), centers[i][1] / 255, centers[i][2] / 255, centers[i][3] / 255) end
+
         for i = 0, 255 do
-            palette[i] = 2^(nearestColor(centers, paletteColors[i])-1)
+            palette[i] = 2^(nearestColor(centers, paletteColors[i]) - 1)
         end
         return 0
     end
