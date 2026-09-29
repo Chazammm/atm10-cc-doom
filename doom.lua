@@ -199,7 +199,6 @@ local keymap = {
     [keys.up] = 0xad,
     [keys.down] = 0xaf,
     [keys.grave] = 27,
-    [keys.escape] = 27,
     [keys.enter] = 13,
     [keys.tab] = 9,
     [keys.backspace] = 127,
