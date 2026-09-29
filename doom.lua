@@ -223,6 +223,29 @@ local keymap = {
     [keys.space] = 32,
 }
 
+local DOOM_REDNET_PROTOCOL = "atm10-doom-control"
+local doomRemoteReady = false
+local doomModemName = nil
+
+for _, name in ipairs(peripheral.getNames()) do
+    if peripheral.getType(name) == "modem" then
+        local m = peripheral.wrap(name)
+        if m and m.isWireless and m.isWireless() then
+            doomModemName = name
+            break
+        end
+    end
+end
+
+if doomModemName then
+    if not rednet.isOpen(doomModemName) then rednet.open(doomModemName) end
+    pcall(rednet.host, DOOM_REDNET_PROTOCOL, "doom-" .. tostring(os.getComputerID()))
+    doomRemoteReady = true
+    print("DOOM wireless controller ready on ID " .. tostring(os.getComputerID()))
+else
+    print("No wireless modem: local keyboard control only")
+end
+
 local speaker = peripheral.find "speaker"
 local files = {
     [0] = io.stdin,
@@ -517,6 +540,16 @@ RISCV.syscalls[13] = function(self, _ev) -- getEvent
             self.mem[_ev] = 1
             self.mem[_ev+1] = keymap[ev[2]] or ev[2]
             return 1
+        elseif ev[1] == "rednet_message" then
+            local msg, protocol = ev[3], ev[4]
+            if protocol == DOOM_REDNET_PROTOCOL and type(msg) == "table" and msg.type == "doom_key" then
+                local k = tonumber(msg.key)
+                if k then
+                    self.mem[_ev] = msg.down and 0 or 1
+                    self.mem[_ev+1] = keymap[k] or k
+                    return 1
+                end
+            end
         --[[elseif ev[1] == "mouse_down" then
             self.mem[_ev] = 2
             self.mem[_ev+1] = ev[2]
