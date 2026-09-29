@@ -68,7 +68,7 @@ addButton("USE",  ax1, 8, w,10, keys.space,     colors.orange)
 addButton("RUN",  ax1,11, w,13, keys.rightShift,colors.blue)
 
 -- Menu/confirm.
-addButton("MENU", 1, math.max(14,h-3), 7, math.max(16,h-1), keys.escape, colors.purple)
+addButton("MENU", 1, math.max(14,h-3), 7, math.max(16,h-1), keys.grave, colors.purple)
 addButton("OK",   9, math.max(14,h-3),15, math.max(16,h-1), keys.enter,  colors.lime)
 
 local function centerText(x1,x2,y,s)
