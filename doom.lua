@@ -482,14 +482,32 @@ else
     end
 
     RISCV.syscalls[12] = function(self) -- updateScreen
-        local screen = setmetatable({}, {__index = function() return setmetatable({}, {__index = function() return 32768 end}) end})
-        for y = 1, 200 do
-            local row = setmetatable({}, {__index = function() return 32768 end})
-            screen[y] = row
-            for x = 1, 320 do
-                row[x] = palette[self.mem[0x1FFFFFF + (y-1)*320 + x]]
+        -- Render the 320x200 DOOM framebuffer into the monitor's actual
+        -- pixelbox canvas. If the monitor is taller/wider, letterbox with
+        -- black instead of leaving uninitialised magenta/purple rows.
+        -- If it is smaller, scale down with nearest-neighbour sampling.
+        local canvasW = pixelbox.width * 2
+        local canvasH = pixelbox.height * 3
+        local scale = math.min(1, canvasW / 320, canvasH / 200)
+        local outW = math.max(1, math.floor(320 * scale))
+        local outH = math.max(1, math.floor(200 * scale))
+        local xoff = math.floor((canvasW - outW) / 2)
+        local yoff = math.floor((canvasH - outH) / 2)
+
+        local blankRow = setmetatable({}, {__index = function() return colors.black end})
+        local screen = setmetatable({}, {__index = function() return blankRow end})
+
+        for dy = 1, outH do
+            local sy = math.min(200, math.floor((dy - 1) / scale) + 1)
+            local row = setmetatable({}, {__index = function() return colors.black end})
+            screen[dy + yoff] = row
+
+            for dx = 1, outW do
+                local sx = math.min(320, math.floor((dx - 1) / scale) + 1)
+                row[dx + xoff] = palette[self.mem[0x1FFFFFF + (sy - 1) * 320 + sx]]
             end
         end
+
         pixelbox.CANVAS = screen
         pixelbox:render()
         return 0
