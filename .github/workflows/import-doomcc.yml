@@ -1,0 +1,46 @@
+name: Import DOOM-CC 1.0
+
+on:
+  push:
+    paths:
+      - ".github/workflows/import-doomcc.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download and extract DOOM-CC 1.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf vendor/doomcc
+          mkdir -p vendor/doomcc
+          curl -fL "https://github.com/MCJack123/DOOM-CC/releases/download/1.0/DOOM-CC.zip" -o /tmp/doomcc.zip
+          rm -rf /tmp/doomcc
+          mkdir -p /tmp/doomcc
+          unzip -q /tmp/doomcc.zip -d /tmp/doomcc
+          cp -a /tmp/doomcc/doom/. vendor/doomcc/
+          printf '%s\n'             'Imported from MCJack123/DOOM-CC release 1.0'             'https://github.com/MCJack123/DOOM-CC/releases/tag/1.0'             > vendor/doomcc/SOURCE.txt
+          ls -lah vendor/doomcc
+
+      - name: Commit imported runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add vendor/doomcc
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "Import DOOM-CC 1.0 runtime"
+          git push
