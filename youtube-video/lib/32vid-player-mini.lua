@@ -6,6 +6,34 @@ local function log2(n) local _, r = math_frexp(n) return r-1 end
 local dfpwm = require "cc.audio.dfpwm"
 
 local speaker = peripheral.find "speaker"
+local speakerName = speaker and peripheral.getName(speaker) or nil
+local dfpwmDecoder = dfpwm.make_decoder()
+
+-- CC:Tweaked only buffers one playAudio call. Never discard a chunk when
+-- the speaker is full: wait until it can accept the samples.
+local function playAudio(samples)
+    if not speaker or not samples or #samples == 0 then return end
+    while not speaker.playAudio(samples) do
+        repeat
+            local _, name = os.pullEvent("speaker_audio_empty")
+        until not speakerName or name == speakerName
+    end
+end
+
+-- Yield while waiting for a frame instead of busy-spinning the Lua computer.
+-- This leaves time for speaker events/networking and reduces server-side jitter.
+local function waitUntil(deadline)
+    while true do
+        local remaining = deadline - os.epoch("utc")
+        if remaining <= 0 then return end
+        if remaining > 75 then
+            sleep((remaining - 30) / 1000)
+        else
+            sleep(0)
+        end
+    end
+end
+
 local file
 local path = ...
 if path:match "^https?://" then
@@ -156,16 +184,20 @@ for _ = 1, nframes do
         --print("read fg colors", vframe)
         local fg = read(width * height)
         local dctime = os.epoch "utc" - dcstart
-        while os.epoch "utc" < start + vframe * 1000 / fps do end
+        waitUntil(start + vframe * 1000 / fps)
         local texta, fga, bga = {}, {}, {}
         for y = 0, height - 1 do
-            local text, fgs, bgs = "", "", ""
+            local text, fgs, bgs = {}, {}, {}
+            local row = y * width
             for x = 1, width do
-                text = text .. string.char(128 + screen[y*width+x])
-                fgs = fgs .. blitColors[fg[y*width+x]]
-                bgs = bgs .. blitColors[bg[y*width+x]]
+                local i = row + x
+                text[x] = string.char(128 + screen[i])
+                fgs[x] = blitColors[fg[i]]
+                bgs[x] = blitColors[bg[i]]
             end
-            texta[y+1], fga[y+1], bga[y+1] = text, fgs, bgs
+            texta[y+1] = table.concat(text)
+            fga[y+1] = table.concat(fgs)
+            bga[y+1] = table.concat(bgs)
         end
         for i = 0, 15 do term.setPaletteColor(2^i, file.read() / 255, file.read() / 255, file.read() / 255) end
         for y = 1, height do
@@ -189,13 +221,15 @@ for _ = 1, nframes do
     elseif ftype == 1 then
         local audio = file.read(size)
         if speaker then
+            local chunk
             if bit32_band(flags, 12) == 0 then
-                local chunk = {audio:byte(1, -1)}
+                chunk = {audio:byte(1, -1)}
                 for i = 1, #chunk do chunk[i] = chunk[i] - 128 end
-                speaker.playAudio(chunk)
             else
-                speaker.playAudio(dfpwm.decode(audio))
+                -- DFPWM is stateful: decode every chunk with the SAME decoder.
+                chunk = dfpwmDecoder(audio)
             end
+            playAudio(chunk)
         end
     elseif ftype == 8 then
         local data = file.read(size)
@@ -222,16 +256,20 @@ for _ = 1, nframes do
         --print("read fg colors", vframe)
         local fg = read(width * height)
         local dctime = os.epoch "utc" - dcstart
-        while os.epoch "utc" < start + vframe * 1000 / fps do end
+        waitUntil(start + vframe * 1000 / fps)
         local texta, fga, bga = {}, {}, {}
         for y = 0, height - 1 do
-            local text, fgs, bgs = "", "", ""
+            local text, fgs, bgs = {}, {}, {}
+            local row = y * width
             for x = 1, width do
-                text = text .. string.char(128 + screen[y*width+x])
-                fgs = fgs .. blitColors[fg[y*width+x]]
-                bgs = bgs .. blitColors[bg[y*width+x]]
+                local i = row + x
+                text[x] = string.char(128 + screen[i])
+                fgs[x] = blitColors[fg[i]]
+                bgs[x] = blitColors[bg[i]]
             end
-            texta[y+1], fga[y+1], bga[y+1] = text, fgs, bgs
+            texta[y+1] = table.concat(text)
+            fga[y+1] = table.concat(fgs)
+            bga[y+1] = table.concat(bgs)
         end
         for i = 0, 15 do term.setPaletteColor(2^i, file.read() / 255, file.read() / 255, file.read() / 255) end
         for y = 1, height do
@@ -255,7 +293,7 @@ for _ = 1, nframes do
 end
 
 -- Wait for the final video frame duration before returning. This keeps playlist parts in sync.
-while os.epoch "utc" < start + vframe * 1000 / fps do sleep(0) end
+waitUntil(start + vframe * 1000 / fps)
 
 for i = 0, 15 do term.setPaletteColor(2^i, term.nativePaletteColor(2^i)) end
 term.setBackgroundColor(colors.black)
