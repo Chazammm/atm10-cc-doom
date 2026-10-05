@@ -61,6 +61,8 @@ settings set musicvideo.url https://example.com/musicvideo.32vid
 video
 ```
 
+The installer writes `/video.lua`, so the `video` command remains available after the CC computer reboots.
+
 ## Your requested YouTube video
 
 Requested source:
