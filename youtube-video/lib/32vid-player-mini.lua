@@ -254,6 +254,9 @@ for _ = 1, nframes do
     else file.close() error("Unknown frame type " .. ftype) end
 end
 
+-- Wait for the final video frame duration before returning. This keeps playlist parts in sync.
+while os.epoch "utc" < start + vframe * 1000 / fps do sleep(0) end
+
 for i = 0, 15 do term.setPaletteColor(2^i, term.nativePaletteColor(2^i)) end
 term.setBackgroundColor(colors.black)
 term.setTextColor(colors.white)
