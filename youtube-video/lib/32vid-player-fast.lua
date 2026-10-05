@@ -223,7 +223,7 @@ local previousText, previousFg, previousBg = {}, {}, {}
 local previousPalette = {}
 local rowText, rowFg, rowBg = {}, {}, {}
 
-local function renderFrame(payload)
+local function decodeFrame(payload)
     local t0 = os.epoch("utc")
     local nextByte = byteReader(payload)
 
@@ -239,7 +239,10 @@ local function renderFrame(payload)
         palette[i] = {nextByte(), nextByte(), nextByte()}
     end
     stats.decodeMs = stats.decodeMs + (os.epoch("utc") - t0)
+    return screen, fg, bg, palette
+end
 
+local function drawFrame(screen, fg, bg, palette)
     local r0 = os.epoch("utc")
 
     -- Palette changes recolour already-present monitor cells, so unchanged rows
@@ -314,14 +317,15 @@ for _ = 1, nframes do
             stats.dropped = stats.dropped + 1
         else
             local payload = file.read(size)
-            local decodeStart = os.epoch("utc")
-            -- If decoding itself made the frame hopelessly late, skip drawing it.
-            local shouldRender = true
-            -- renderFrame performs decoding and drawing together, so use a conservative
-            -- pre-check here and rely on the next frame to recover if this one overruns.
-            if shouldRender then
+            -- Decode ahead of the presentation deadline. This uses otherwise-idle time
+            -- and avoids starting an expensive ANS decode at the exact frame deadline.
+            local screen, fg, bg, palette = decodeFrame(payload)
+            local afterDecode = os.epoch("utc")
+            if dropLate and videoFrame > 0 and afterDecode - deadline > frameMs * dropFactor then
+                stats.dropped = stats.dropped + 1
+            else
                 waitUntil(deadline)
-                renderFrame(payload)
+                drawFrame(screen, fg, bg, palette)
                 stats.frames = stats.frames + 1
             end
         end
