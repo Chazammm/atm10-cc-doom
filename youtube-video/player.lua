@@ -34,7 +34,7 @@ local ok, err = xpcall(function()
   monitor.clear()
   monitor.setCursorPos(1, 1)
 
-  local ran = shell.run("/video/32vid-player-mini.lua", source)
+  local ran = shell.run("/video-lib/32vid-player-mini.lua", source)
   if not ran then error("32vid player exited with an error.") end
 end, debug.traceback)
 
