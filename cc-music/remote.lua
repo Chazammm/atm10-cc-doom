@@ -1,0 +1,110 @@
+-- CC-Music Pocket/Computer Remote
+local PROTOCOL = "ccmusic.v2"
+local VERSION = "2.0.0"
+
+local function nowMs()
+    if os.epoch then return os.epoch("utc") end
+    return math.floor(os.clock() * 1000)
+end
+
+local function openModems()
+    local opened = 0
+    for _, name in ipairs(peripheral.getNames()) do
+        if peripheral.getType(name) == "modem" then
+            if not rednet.isOpen(name) then pcall(rednet.open, name) end
+            if rednet.isOpen(name) then opened = opened + 1 end
+        end
+    end
+    return opened
+end
+
+if openModems() == 0 then error("Attach a wired or wireless modem first.", 0) end
+
+local playerId = nil
+local status = nil
+local lastSeen = 0
+
+local function fmtTime(seconds)
+    seconds = math.max(0, math.floor((seconds or 0) + 0.5))
+    return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
+end
+
+local function send(op, value)
+    local msg = { op = op }
+    if op == "volume" then msg.value = value end
+    if playerId then rednet.send(playerId, msg, PROTOCOL) else rednet.broadcast(msg, PROTOCOL) end
+end
+
+local function discover()
+    rednet.broadcast({ op = "discover", remote = VERSION }, PROTOCOL)
+end
+
+local function draw()
+    term.setBackgroundColor(colors.black)
+    term.setTextColor(colors.white)
+    term.clear()
+    local w, h = term.getSize()
+    term.setCursorPos(1, 1)
+    term.setBackgroundColor(colors.blue)
+    term.clearLine()
+    term.setCursorPos(2, 1)
+    term.setTextColor(colors.white)
+    term.write("CC-MUSIC REMOTE")
+
+    term.setBackgroundColor(colors.black)
+    if status and nowMs() - lastSeen < 6000 then
+        local title = tostring(status.title or "Stopped")
+        if #title > w - 2 then title = title:sub(1, w - 3) .. ">" end
+        term.setCursorPos(2, 3); term.setTextColor(colors.yellow); term.write(title)
+        term.setCursorPos(2, 5); term.setTextColor(colors.lightGray)
+        term.write(fmtTime(status.position) .. " / " .. fmtTime(status.duration))
+        term.setCursorPos(2, 6)
+        term.write(string.format("VOL %d%%  %s", math.floor((status.volume or 0) * 100 + 0.5), tostring(status.loop or "all"):upper()))
+        term.setCursorPos(2, 7)
+        term.write((status.shuffle and "SHUFFLE  " or "ORDER    ") .. tostring(status.speakers or 0) .. " spk")
+        if status.error then term.setCursorPos(2, 9); term.setTextColor(colors.red); term.write(tostring(status.error):sub(1, w - 2)) end
+    else
+        term.setCursorPos(2, 3); term.setTextColor(colors.orange); term.write("Searching for player...")
+    end
+
+    local y = math.max(11, h - 6)
+    term.setTextColor(colors.white)
+    term.setCursorPos(2, y); term.write("SPACE  Play/Pause")
+    term.setCursorPos(2, y + 1); term.write("LEFT   Previous")
+    term.setCursorPos(2, y + 2); term.write("RIGHT  Next")
+    term.setCursorPos(2, y + 3); term.write("UP/DN  Volume")
+    term.setCursorPos(2, y + 4); term.write("S/L    Shuffle/Loop")
+    term.setCursorPos(2, y + 5); term.write("Q      Quit")
+end
+
+discover()
+local poll = os.startTimer(1)
+draw()
+
+while true do
+    local ev, a, b, c = os.pullEventRaw()
+    if ev == "rednet_message" and c == PROTOCOL and type(b) == "table" and b.op == "status" then
+        playerId, status, lastSeen = a, b, nowMs()
+        draw()
+    elseif ev == "timer" and a == poll then
+        if playerId then send("status") else discover() end
+        poll = os.startTimer(1)
+        draw()
+    elseif ev == "key" then
+        if a == keys.q then break
+        elseif a == keys.space then send("toggle")
+        elseif a == keys.left then send("prev")
+        elseif a == keys.right then send("next")
+        elseif a == keys.up then send("volume", math.min(1, (status and status.volume or 0.5) + 0.05))
+        elseif a == keys.down then send("volume", math.max(0, (status and status.volume or 0.5) - 0.05))
+        elseif a == keys.s then send("shuffle")
+        elseif a == keys.l then send("loop") end
+    elseif ev == "terminate" then
+        break
+    end
+end
+
+term.setBackgroundColor(colors.black)
+term.setTextColor(colors.white)
+term.clear()
+term.setCursorPos(1, 1)
