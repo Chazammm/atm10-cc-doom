@@ -84,13 +84,16 @@ function Invoke-Gh-Interactive {
         [string[]]$Arguments
     )
 
-    # gh writes normal status output to stderr. Windows PowerShell 5.1 may turn
-    # this into NativeCommandError when ErrorActionPreference is Stop.
+    # IMPORTANT: PowerShell functions return every uncaptured pipeline value.
+    # gh commands such as 'release create' print a URL to stdout, which used to
+    # make this function return @("https://...", 0) instead of just 0.
+    # Pipe all native output to the host so the only returned value is the exit code.
     $oldPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        & $Gh @Arguments
-        return $LASTEXITCODE
+        & $Gh @Arguments 2>&1 | ForEach-Object { Write-Host $_ }
+        $code = $LASTEXITCODE
+        return [int]$code
     }
     finally {
         $ErrorActionPreference = $oldPreference
