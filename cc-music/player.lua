@@ -2,7 +2,7 @@
 -- Designed for large Advanced Monitor walls and SQSH1 (DFPWM) audio files.
 -- Repository default: https://github.com/Di33le/CC-Music
 
-local VERSION = "2.0.0"
+local VERSION = "2.1.0"
 local PROTOCOL = "ccmusic.v2"
 local INDEX_CACHE = "/.ccmusic-index.json"
 
@@ -31,7 +31,8 @@ defineSetting("ccmusic.volume", 1.0, "number", "Playback volume from 0.0 to 1.0"
 defineSetting("ccmusic.shuffle", true, "boolean", "Shuffle playlist")
 defineSetting("ccmusic.loop", "all", "string", "Loop mode: all, one, off")
 defineSetting("ccmusic.text_scale", 0.5, "number", "Advanced Monitor text scale")
-defineSetting("ccmusic.chunk_bytes", 1024, "number", "SQSH/DFPWM bytes decoded per audio chunk")
+defineSetting("ccmusic.chunk_bytes", 4096, "number", "SQSH/DFPWM bytes decoded per audio chunk")
+defineSetting("ccmusic.hq_resampler", true, "boolean", "Use higher-quality 24 kHz -> 48 kHz interpolation")
 defineSetting("ccmusic.ui_fps", 6, "number", "Maximum UI refresh rate")
 defineSetting("ccmusic.start_track", "Sundress", "string", "Preferred title substring to play first")
 
@@ -49,11 +50,12 @@ local CONFIG = {
     repo = tostring(getSetting("ccmusic.repo", "Di33le/CC-Music")),
     branch = tostring(getSetting("ccmusic.branch", "main")),
     textScale = tonumber(getSetting("ccmusic.text_scale", 0.5)) or 0.5,
-    chunkBytes = math.floor(tonumber(getSetting("ccmusic.chunk_bytes", 1024)) or 1024),
+    chunkBytes = math.floor(tonumber(getSetting("ccmusic.chunk_bytes", 4096)) or 4096),
+    hqResampler = getSetting("ccmusic.hq_resampler", true) ~= false,
     uiFps = tonumber(getSetting("ccmusic.ui_fps", 6)) or 6,
     startTrack = tostring(getSetting("ccmusic.start_track", "Sundress")),
 }
-CONFIG.chunkBytes = math.max(256, math.min(4096, CONFIG.chunkBytes))
+CONFIG.chunkBytes = math.max(256, math.min(8192, CONFIG.chunkBytes))
 CONFIG.uiFps = math.max(2, math.min(12, CONFIG.uiFps))
 if CONFIG.textScale < 0.5 then CONFIG.textScale = 0.5 end
 if CONFIG.textScale > 5 then CONFIG.textScale = 5 end
@@ -702,20 +704,51 @@ local function analyzeAudio(samples, rate)
     end
 end
 
-local function resample48k(samples, sourceRate)
+local function clampPcm8(v)
+    if v > 127 then return 127 end
+    if v < -128 then return -128 end
+    if v >= 0 then return math.floor(v + 0.5) end
+    return math.ceil(v - 0.5)
+end
+
+local function resample48k(samples, sourceRate, context)
     if sourceRate == 48000 then return samples end
     local n = #samples
+    if n == 0 then return samples end
+
     if sourceRate == 24000 then
-        -- 2x linear interpolation sounds noticeably smoother than simply duplicating
-        -- every 24 kHz sample, while keeping the exact 48 kHz output length.
         local out = {}
         local k = 1
-        for i = 1, n do
-            local a = samples[i] or 0
-            local b = samples[i + 1] or a
-            out[k] = a
-            out[k + 1] = math.floor((a + b) * 0.5 + (a + b >= 0 and 0.5 or -0.5))
-            k = k + 2
+
+        if CONFIG.hqResampler then
+            -- 4-point cubic interpolation at the half-sample position:
+            -- (-x[-1] + 9*x[0] + 9*x[1] - x[2]) / 16
+            --
+            -- Compared with plain linear interpolation this retains noticeably more
+            -- upper-mid/treble detail from a 24 kHz source while still producing the
+            -- exact 48 kHz stream CC:Tweaked speakers expect. Carry one sample across
+            -- chunks so the filter remains continuous at block boundaries.
+            local previous = (context and context.previous) or samples[1] or 0
+            for i = 1, n do
+                local xm1 = i > 1 and samples[i - 1] or previous
+                local x0 = samples[i] or 0
+                local x1 = samples[i + 1] or x0
+                local x2 = samples[i + 2] or x1
+
+                out[k] = x0
+                out[k + 1] = clampPcm8((-xm1 + 9 * x0 + 9 * x1 - x2) / 16)
+                k = k + 2
+            end
+            if context then context.previous = samples[n] or previous end
+        else
+            -- Low-CPU fallback.
+            for i = 1, n do
+                local a = samples[i] or 0
+                local b = samples[i + 1] or a
+                out[k] = a
+                out[k + 1] = clampPcm8((a + b) * 0.5)
+                k = k + 2
+            end
         end
         return out
     end
@@ -731,7 +764,7 @@ local function resample48k(samples, sourceRate)
             out[i] = samples[n] or 0
         else
             local x, y = samples[a] or 0, samples[a + 1] or 0
-            out[i] = math.floor(x + (y - x) * frac + 0.5)
+            out[i] = clampPcm8(x + (y - x) * frac)
         end
     end
     return out
@@ -944,6 +977,7 @@ local function audioLoop()
                     track.duration = header.audioBytes * 8 / header.rate
                     state.lyrics = parseLyrics(header.lyricsRaw)
                     local decoder = dfpwm.make_decoder()
+                    local resampleContext = {}
                     local remaining = header.audioBytes
                     state.loading = false
 
@@ -969,7 +1003,7 @@ local function audioLoop()
                         end
 
                         analyzeAudio(decoded, header.rate)
-                        local pcm = resample48k(decoded, header.rate)
+                        local pcm = resample48k(decoded, header.rate, resampleContext)
                         if not playPcmBlock(pcm, generation) then break end
                     end
 
