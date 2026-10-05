@@ -22,6 +22,12 @@ local diffRows = settings.get("musicvideo.diff_rows")
 if diffRows == nil then diffRows = true end
 local showStats = settings.get("musicvideo.stats") == true
 
+-- A playlist can keep one media clock across multiple HTTP files. This makes
+-- part boundaries behave as one continuous movie instead of re-syncing A/V.
+local sessionActive = settings.get("musicvideo.session_active") == true
+local sessionStart = sessionActive and tonumber(settings.get("musicvideo.session_start")) or nil
+local frameOffset = sessionActive and (tonumber(settings.get("musicvideo.session_frame")) or 0) or 0
+
 local stats = {
     frames = 0,
     dropped = 0,
@@ -283,7 +289,7 @@ end
 term.setBackgroundColor(colors.black)
 term.clear()
 
-local mediaStart
+local mediaStart = sessionStart
 local videoFrame = 0
 local subtitles = {}
 
@@ -304,12 +310,18 @@ for _ = 1, nframes do
                 samples = normalDecoder(audio)
             end
             playSamples(samples)
-            if not mediaStart then mediaStart = os.epoch("utc") end
+            if not mediaStart then
+                mediaStart = os.epoch("utc")
+                if sessionActive then settings.set("musicvideo.session_start", mediaStart) end
+            end
         end
 
     elseif frameType == 0 then
-        local deadline = (mediaStart or os.epoch("utc")) + videoFrame * frameMs
-        if not mediaStart then mediaStart = deadline end
+        local deadline = (mediaStart or os.epoch("utc")) + (frameOffset + videoFrame) * frameMs
+        if not mediaStart then
+            mediaStart = deadline
+            if sessionActive then settings.set("musicvideo.session_start", mediaStart) end
+        end
         local now = os.epoch("utc")
 
         if dropLate and videoFrame > 0 and now - deadline > frameMs * dropFactor then
@@ -342,6 +354,10 @@ for _ = 1, nframes do
 end
 
 file.close()
+
+if sessionActive then
+    settings.set("musicvideo.session_frame", frameOffset + videoFrame)
+end
 
 if endMode ~= "keep" then
     for i = 0, 15 do term.setPaletteColor(2 ^ i, term.nativePaletteColor(2 ^ i)) end
