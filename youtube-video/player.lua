@@ -1,10 +1,10 @@
--- ATM10 / CC:Tweaked monitor video launcher
--- Streams a Sanjuuni .32vid file to an Advanced Monitor and CC:Tweaked speaker.
+-- ATM10 / CC:Tweaked monitor video launcher.
 local args = { ... }
 local source = args[1] or settings.get("musicvideo.url")
+local endMode = args[2]
 
 if not source or source == "" then
-  print("Usage: video <URL-or-file.32vid>")
+  print("Usage: video <URL-or-file.32vid> [keep]")
   print("Or: settings set musicvideo.url <URL>")
   return
 end
@@ -21,11 +21,7 @@ local w, h = monitor.getSize()
 
 local old = term.current()
 print(("Monitor ready: %dx%d chars @ scale %.1f"):format(w, h, scale))
-print("Starting 32vid stream...")
-
-local function cleanup()
-  term.redirect(old)
-end
+print("Starting optimised 32vid stream...")
 
 local ok, err = xpcall(function()
   term.redirect(monitor)
@@ -34,11 +30,13 @@ local ok, err = xpcall(function()
   monitor.clear()
   monitor.setCursorPos(1, 1)
 
-  local ran = shell.run("/video-lib/32vid-player-mini.lua", source)
-  if not ran then error("32vid player exited with an error.") end
+  local ran = shell.run("/video-lib/32vid-player-fast.lua", source, endMode or "")
+  if not ran then
+    print("Fast player failed; trying compatibility player...")
+    local fallback = shell.run("/video-lib/32vid-player-mini.lua", source)
+    if not fallback then error("Both video players failed.") end
+  end
 end, debug.traceback)
 
-cleanup()
-if not ok then
-  error(err, 0)
-end
+term.redirect(old)
+if not ok then error(err, 0) end
