@@ -2,7 +2,7 @@
 -- Designed for large Advanced Monitor walls and SQSH1 (DFPWM) audio files.
 -- Repository default: https://github.com/Di33le/CC-Music
 
-local VERSION = "2.1.0"
+local VERSION = "2.2.0"
 local PROTOCOL = "ccmusic.v2"
 local INDEX_CACHE = "/.ccmusic-index.json"
 
@@ -31,7 +31,7 @@ defineSetting("ccmusic.volume", 1.0, "number", "Playback volume from 0.0 to 1.0"
 defineSetting("ccmusic.shuffle", true, "boolean", "Shuffle playlist")
 defineSetting("ccmusic.loop", "all", "string", "Loop mode: all, one, off")
 defineSetting("ccmusic.text_scale", 0.5, "number", "Advanced Monitor text scale")
-defineSetting("ccmusic.chunk_bytes", 4096, "number", "SQSH/DFPWM bytes decoded per audio chunk")
+defineSetting("ccmusic.chunk_bytes", 0, "number", "DFPWM bytes per chunk; 0 = automatic maximum safe size")
 defineSetting("ccmusic.hq_resampler", true, "boolean", "Use higher-quality 24 kHz -> 48 kHz interpolation")
 defineSetting("ccmusic.ui_fps", 6, "number", "Maximum UI refresh rate")
 defineSetting("ccmusic.start_track", "Sundress", "string", "Preferred title substring to play first")
@@ -50,12 +50,12 @@ local CONFIG = {
     repo = tostring(getSetting("ccmusic.repo", "Di33le/CC-Music")),
     branch = tostring(getSetting("ccmusic.branch", "main")),
     textScale = tonumber(getSetting("ccmusic.text_scale", 0.5)) or 0.5,
-    chunkBytes = math.floor(tonumber(getSetting("ccmusic.chunk_bytes", 4096)) or 4096),
+    chunkBytes = math.floor(tonumber(getSetting("ccmusic.chunk_bytes", 0)) or 0),
     hqResampler = getSetting("ccmusic.hq_resampler", true) ~= false,
     uiFps = tonumber(getSetting("ccmusic.ui_fps", 6)) or 6,
     startTrack = tostring(getSetting("ccmusic.start_track", "Sundress")),
 }
-CONFIG.chunkBytes = math.max(256, math.min(8192, CONFIG.chunkBytes))
+if CONFIG.chunkBytes ~= 0 then CONFIG.chunkBytes = math.max(256, math.min(16384, CONFIG.chunkBytes)) end
 CONFIG.uiFps = math.max(2, math.min(12, CONFIG.uiFps))
 if CONFIG.textScale < 0.5 then CONFIG.textScale = 0.5 end
 if CONFIG.textScale > 5 then CONFIG.textScale = 5 end
@@ -935,6 +935,23 @@ local function openTrack(track)
     return nil, lastErr or "Could not open audio stream"
 end
 
+local function chunkBytesForRate(rate)
+    -- speaker.playAudio accepts at most 128*1024 PCM samples. One DFPWM byte
+    -- decodes to eight source samples. For 24 kHz tracks we double the sample
+    -- count during resampling, so 8 KiB is the largest safe DFPWM chunk.
+    -- Native 48 kHz tracks can use the full 16 KiB recommended by CC:Tweaked.
+    if CONFIG.chunkBytes and CONFIG.chunkBytes > 0 then
+        local maxBytes = rate == 24000 and 8192 or 16384
+        return math.min(CONFIG.chunkBytes, maxBytes)
+    end
+    if rate == 24000 then return 8192 end
+    if rate == 48000 then return 16384 end
+
+    local ratio = 48000 / rate
+    local maxBytes = math.floor((128 * 1024) / (8 * math.max(1, ratio)))
+    return math.max(256, math.min(16384, maxBytes))
+end
+
 local function audioLoop()
     while state.running do
         local generation = state.generation
@@ -988,7 +1005,7 @@ local function audioLoop()
                         end
                         if not state.running or generation ~= state.generation then break end
 
-                        local want = math.min(CONFIG.chunkBytes, remaining)
+                        local want = math.min(chunkBytesForRate(header.rate), remaining)
                         local chunk = handle.read(want)
                         if not chunk or #chunk == 0 then
                             state.error = "Unexpected end of SQSH stream"
