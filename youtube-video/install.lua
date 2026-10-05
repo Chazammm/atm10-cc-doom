@@ -2,7 +2,8 @@ local base = "https://raw.githubusercontent.com/Chazammm/atm10-cc-doom/main/yout
 local files = {
   ["player.lua"] = "/video.lua",
   ["playlist.lua"] = "/playlist.lua",
-  ["agartha.lua"] = "/agartha.lua",\n  ["agartha-v2.lua"] = "/agartha-v2.lua",
+  ["agartha.lua"] = "/agartha.lua",
+  ["agartha-v2.lua"] = "/agartha-v2.lua",
   ["monitorinfo.lua"] = "/videoinfo.lua",
   ["lib/32vid-player-mini.lua"] = "/video-lib/32vid-player-mini.lua",
   ["lib/32vid-player-fast.lua"] = "/video-lib/32vid-player-fast.lua",
@@ -34,5 +35,6 @@ print("")
 print("Installed maximum-quality player.")
 print("Run: videoinfo")
 print("Run: video <direct .32vid URL>")
-print("Run: agartha        -- current 4 FPS media")\nprint("Run: agartha-v2     -- 10 FPS max-quality media")
+print("Run: agartha        -- current 4 FPS media")
+print("Run: agartha-v2     -- 10 FPS max-quality media")
 print("Optional diagnostics: settings set musicvideo.stats true")
