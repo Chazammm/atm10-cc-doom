@@ -40,5 +40,5 @@ end, debug.traceback)
 
 cleanup()
 if not ok then
-  printError(err)
+  error(err, 0)
 end
