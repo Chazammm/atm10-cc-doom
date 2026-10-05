@@ -998,3 +998,595 @@ for _, c in ipairs({
     colors.yellow, colors.lime, colors.pink, colors.gray,
     colors.lightGray, colors.cyan, colors.purple, colors.blue,
     colors.brown, colors.green, colors.red, colors.black,
+}) do
+    BLIT[c] = colors.toBlit(c)
+end
+
+local function colorBlit(c) return BLIT[c] or colors.toBlit(c) end
+
+local Canvas = {}
+Canvas.__index = Canvas
+
+function Canvas.new(w, h)
+    local self = setmetatable({ w = w, h = h, rows = {} }, Canvas)
+    local fg, bg = colorBlit(colors.white), colorBlit(colors.black)
+    for y = 1, h do
+        local row = { c = {}, f = {}, b = {} }
+        for x = 1, w do row.c[x] = " "; row.f[x] = fg; row.b[x] = bg end
+        self.rows[y] = row
+    end
+    return self
+end
+
+function Canvas:clear(fgColor, bgColor)
+    local fg = colorBlit(fgColor or colors.white)
+    local bg = colorBlit(bgColor or colors.black)
+    for y = 1, self.h do
+        local row = self.rows[y]
+        for x = 1, self.w do
+            row.c[x] = " "
+            row.f[x] = fg
+            row.b[x] = bg
+        end
+    end
+end
+
+function Canvas:cell(x, y, ch, fg, bg)
+    x, y = math.floor(x), math.floor(y)
+    if x < 1 or y < 1 or x > self.w or y > self.h then return end
+    local row = self.rows[y]
+    row.c[x] = ch or " "
+    if fg then row.f[x] = colorBlit(fg) end
+    if bg then row.b[x] = colorBlit(bg) end
+end
+
+function Canvas:text(x, y, text, fg, bg, maxLen)
+    if y < 1 or y > self.h then return end
+    text = asciiSafe(text)
+    if maxLen and #text > maxLen then
+        if maxLen >= 2 then text = text:sub(1, maxLen - 1) .. ">" else text = text:sub(1, maxLen) end
+    end
+    for i = 1, #text do self:cell(x + i - 1, y, text:sub(i, i), fg, bg) end
+end
+
+function Canvas:center(y, text, x1, x2, fg, bg)
+    x1, x2 = x1 or 1, x2 or self.w
+    text = asciiSafe(text)
+    local room = math.max(0, x2 - x1 + 1)
+    if #text > room then text = text:sub(1, room) end
+    local x = x1 + math.floor((room - #text) / 2)
+    self:text(x, y, text, fg, bg)
+end
+
+function Canvas:fill(x1, y1, x2, y2, bg, ch, fg)
+    x1, x2 = math.max(1, math.floor(x1)), math.min(self.w, math.floor(x2))
+    y1, y2 = math.max(1, math.floor(y1)), math.min(self.h, math.floor(y2))
+    if x2 < x1 or y2 < y1 then return end
+    ch = ch or " "
+    for y = y1, y2 do
+        for x = x1, x2 do self:cell(x, y, ch, fg or colors.white, bg) end
+    end
+end
+
+function Canvas:hline(x1, x2, y, ch, fg, bg)
+    for x = x1, x2 do self:cell(x, y, ch or "-", fg or colors.gray, bg or colors.black) end
+end
+
+function Canvas:vline(x, y1, y2, ch, fg, bg)
+    for y = y1, y2 do self:cell(x, y, ch or "|", fg or colors.gray, bg or colors.black) end
+end
+
+local prevFrame = { w = 0, h = 0, text = {}, fg = {}, bg = {}, target = nil }
+local canvasCache = nil
+
+local function invalidateFrame()
+    prevFrame.w, prevFrame.h, prevFrame.target = 0, 0, nil
+    prevFrame.text, prevFrame.fg, prevFrame.bg = {}, {}, {}
+end
+
+local function flushCanvas(canvas, target)
+    if not target then return end
+    if state._frameInvalid or prevFrame.target ~= target or prevFrame.w ~= canvas.w or prevFrame.h ~= canvas.h then
+        invalidateFrame()
+        prevFrame.target = target
+        prevFrame.w, prevFrame.h = canvas.w, canvas.h
+        state._frameInvalid = false
+        pcall(target.setBackgroundColor, colors.black)
+        pcall(target.clear)
+    end
+
+    for y = 1, canvas.h do
+        local row = canvas.rows[y]
+        local t, f, b = table.concat(row.c), table.concat(row.f), table.concat(row.b)
+        if t ~= prevFrame.text[y] or f ~= prevFrame.fg[y] or b ~= prevFrame.bg[y] then
+            local ok = pcall(function()
+                target.setCursorPos(1, y)
+                target.blit(t, f, b)
+            end)
+            if not ok then return end
+            prevFrame.text[y], prevFrame.fg[y], prevFrame.bg[y] = t, f, b
+        end
+    end
+end
+
+local function addHitbox(id, x1, y1, x2, y2, data)
+    state.hitboxes[#state.hitboxes + 1] = {
+        id = id, x1 = x1, y1 = y1, x2 = x2, y2 = y2, data = data,
+    }
+end
+
+local RAINBOW = {
+    colors.red, colors.orange, colors.yellow, colors.lime,
+    colors.green, colors.cyan, colors.lightBlue, colors.blue,
+    colors.purple, colors.magenta, colors.pink, colors.red,
+    colors.orange, colors.yellow, colors.lime, colors.cyan,
+}
+
+local function drawVisualizer(c, x1, y1, x2, y2)
+    if x2 - x1 < 20 or y2 - y1 < 9 then return end
+    local cx = math.floor((x1 + x2) / 2)
+    local cy = math.floor((y1 + y2) / 2)
+    local rx = math.max(5, math.floor((x2 - x1) * 0.36))
+    local ry = math.max(3, math.floor((y2 - y1) * 0.40))
+    local pulse = clamp(state.rms * 2.2, 0, 1)
+    rx = math.min(math.floor((x2 - x1) / 2) - 1, rx + math.floor(pulse * 2))
+    ry = math.min(math.floor((y2 - y1) / 2) - 1, ry + math.floor(pulse))
+
+    local bands = #state.bands
+    local barSpan = math.max(18, math.min(rx * 2 - 6, bands * 2))
+    local startX = cx - math.floor(barSpan / 2)
+    local maxHalf = math.max(1, ry - 2)
+
+    for b = 1, bands do
+        local x = startX + math.floor((b - 1) * (barSpan - 1) / math.max(1, bands - 1))
+        local v = clamp(state.bands[b] or 0, 0, 1)
+        local half = math.max(1, math.floor(v * maxHalf + 0.5))
+        local col = RAINBOW[b] or colors.white
+        c:fill(x, cy - half, x, cy + half, col, " ", col)
+    end
+
+    -- Dotted ellipse on top, like the reference screenshot.
+    for deg = 0, 354, 6 do
+        local a = deg * math.pi / 180
+        local x = math.floor(cx + math.cos(a) * rx + 0.5)
+        local y = math.floor(cy + math.sin(a) * ry + 0.5)
+        c:cell(x, y, ".", colors.white, colors.black)
+    end
+
+    -- Central plus/cross.
+    c:cell(cx, cy - 1, " ", colors.white, colors.white)
+    c:cell(cx, cy, " ", colors.white, colors.white)
+    c:cell(cx, cy + 1, " ", colors.white, colors.white)
+    c:cell(cx - 1, cy, " ", colors.white, colors.white)
+    c:cell(cx + 1, cy, " ", colors.white, colors.white)
+end
+
+local function filteredLibrary()
+    if not state.searchMode or state.search == "" then return nil end
+    local q = state.search:lower()
+    local out = {}
+    for i = 1, #state.library do
+        if state.library[i].title:lower():find(q, 1, true) then out[#out + 1] = i end
+    end
+    return out
+end
+
+local function nextQueueTrackIndex(rowOffset)
+    if #state.order == 0 then return nil end
+    local p = state.orderPos + rowOffset
+    while p > #state.order do p = p - #state.order end
+    if p < 1 then p = 1 end
+    return state.order[p]
+end
+
+local function drawQueue(c, x1, y1, x2, y2)
+    if x2 <= x1 then return end
+    local width = x2 - x1 + 1
+    local searchResults = filteredLibrary()
+    local heading
+    if state.searchMode then
+        heading = "SEARCH: " .. (state.search ~= "" and state.search or "type...")
+    else
+        heading = "UP NEXT"
+    end
+    c:text(x1 + 1, y1, heading, state.searchMode and colors.yellow or colors.white, colors.black, math.max(1, width - 9))
+    c:text(x2 - 6, y1, "[U][D]", colors.lightGray, colors.black)
+    addHitbox("scroll_up", x2 - 6, y1, x2 - 4, y1)
+    addHitbox("scroll_down", x2 - 2, y1, x2, y1)
+
+    local firstY = y1 + 1
+    local rows = math.max(0, y2 - firstY + 1)
+    local maxScroll
+    if searchResults then maxScroll = math.max(0, #searchResults - rows)
+    else maxScroll = math.max(0, #state.order - 1 - rows) end
+    state.queueScroll = clamp(state.queueScroll, 0, maxScroll)
+
+    for r = 0, rows - 1 do
+        local itemIndex, ordinal
+        if searchResults then
+            local p = state.queueScroll + r + 1
+            itemIndex = searchResults[p]
+            ordinal = p
+        else
+            local off = state.queueScroll + r + 1
+            itemIndex = nextQueueTrackIndex(off)
+            ordinal = off
+            if off > #state.order - 1 then itemIndex = nil end
+        end
+
+        local y = firstY + r
+        if itemIndex and state.library[itemIndex] then
+            local tr = state.library[itemIndex]
+            local time = fmtTime(tr.duration)
+            local prefix = string.format("%2d. ", ordinal)
+            local titleRoom = width - #prefix - #time - 3
+            if titleRoom < 3 then titleRoom = 3 end
+            local title = tr.title
+            if #title > titleRoom then title = title:sub(1, titleRoom - 1) .. ">" end
+            local selected = itemIndex == state.currentIndex
+            local bg = selected and colors.gray or colors.black
+            local fg = selected and colors.white or colors.lightGray
+            c:fill(x1, y, x2, y, bg)
+            c:text(x1 + 1, y, prefix .. title, fg, bg, width - #time - 2)
+            c:text(x2 - #time + 1, y, time, selected and colors.white or colors.gray, bg)
+            addHitbox("track", x1, y, x2, y, itemIndex)
+        end
+    end
+end
+
+local function drawButton(c, x, y, text, active, id)
+    local bg = active and colors.lightBlue or colors.gray
+    local fg = active and colors.black or colors.white
+    local label = " " .. text .. " "
+    c:text(x, y, label, fg, bg)
+    addHitbox(id, x, y, x + #label - 1, y)
+    return x + #label + 1
+end
+
+local function drawControls(c, x1, y, x2)
+    local x = x1
+    x = drawButton(c, x, y, "|<", false, "prev")
+    x = drawButton(c, x, y, state.paused and ">" or "||", state.paused, "pause")
+    x = drawButton(c, x, y, ">|", false, "next")
+    if x + 10 <= x2 then x = drawButton(c, x, y, "SHUFFLE", state.shuffle, "shuffle") end
+    if x + 9 <= x2 then x = drawButton(c, x, y, "LOOP:" .. state.loopMode:upper(), state.loopMode ~= "off", "loop") end
+end
+
+local function drawProgress(c, x1, y, x2)
+    local cur = currentPositionSeconds()
+    local total = state.current and state.current.duration or 0
+    local left = fmtTime(cur)
+    local right = fmtTime(total)
+    c:text(x1, y, left, colors.lightGray, colors.black)
+    c:text(x2 - #right + 1, y, right, colors.lightGray, colors.black)
+    local barX1 = x1 + #left + 2
+    local barX2 = x2 - #right - 2
+    if barX2 >= barX1 then
+        local width = barX2 - barX1 + 1
+        local ratio = total > 0 and clamp(cur / total, 0, 1) or 0
+        local filled = math.floor(width * ratio + 0.5)
+        for i = 0, width - 1 do
+            local col = i < filled and colors.lightBlue or colors.gray
+            c:cell(barX1 + i, y, " ", col, col)
+        end
+    end
+end
+
+local function drawVolume(c, x1, y, x2)
+    local label = "VOL"
+    c:text(x1, y, label, colors.lightGray, colors.black)
+    local pct = string.format("%3d%%", math.floor(state.volume * 100 + 0.5))
+    local barX1 = x1 + #label + 2
+    local barX2 = x2 - #pct - 2
+    c:text(x2 - #pct + 1, y, pct, colors.white, colors.black)
+    if barX2 >= barX1 then
+        local width = barX2 - barX1 + 1
+        local filled = math.floor(width * state.volume + 0.5)
+        for i = 0, width - 1 do
+            local col = i < filled and colors.lime or colors.gray
+            c:cell(barX1 + i, y, " ", col, col)
+        end
+        addHitbox("volume", barX1, y, barX2, y, { x1 = barX1, x2 = barX2 })
+    end
+end
+
+local function activeRemoteCount()
+    local now = nowMs()
+    local n = 0
+    for id, seen in pairs(state.remotes) do
+        if now - seen < 10000 then n = n + 1 else state.remotes[id] = nil end
+    end
+    return n
+end
+
+local function renderFrame()
+    local target = state.target or term.current()
+    local ok, w, h = pcall(target.getSize)
+    if not ok or not w or not h then return end
+    if w < 20 or h < 8 then return end
+
+    local c
+    if canvasCache and canvasCache.w == w and canvasCache.h == h then
+        c = canvasCache
+        c:clear(colors.white, colors.black)
+    else
+        c = Canvas.new(w, h)
+        canvasCache = c
+    end
+    state.hitboxes = {}
+
+    -- Header
+    c:fill(1, 1, w, 1, colors.blue)
+    c:text(2, 1, "SQSH PLAYER", colors.white, colors.blue)
+    local mode = state.shuffle and "SHUFFLE" or "ORDER"
+    c:text(math.min(w, 14), 1, mode, state.shuffle and colors.lime or colors.lightGray, colors.blue)
+
+    local statusRight = string.format("%d remote  %d spk", activeRemoteCount(), #state.speakers)
+    c:text(math.max(1, w - #statusRight), 1, statusRight, colors.white, colors.blue)
+    if state.current then
+        local rightLimit = math.max(20, w - #statusRight - 2)
+        c:center(1, state.current.title, 26, rightLimit, colors.yellow, colors.blue)
+    else
+        c:center(1, "CC-Music " .. VERSION, 20, w - #statusRight - 2, colors.yellow, colors.blue)
+    end
+
+    local mainW
+    if w >= 70 then mainW = math.floor(w * 0.67) else mainW = w end
+    local dividerX = mainW + 1
+    if mainW < w then c:vline(dividerX, 2, h, "|", colors.gray, colors.black) end
+
+    local leftX1, leftX2 = 2, mainW - 1
+    if mainW >= w then leftX2 = w - 1 end
+
+    -- Main visual area
+    local controlsY = math.max(6, h - 2)
+    local progressY = controlsY - 1
+    local lyricY = math.max(4, progressY - 2)
+    local statusY = lyricY + 1
+    drawVisualizer(c, leftX1, 3, leftX2, math.max(5, lyricY - 1))
+
+    if state.current then
+        c:center(lyricY, lyricAt(currentPositionSeconds()), leftX1, leftX2, colors.lightGray, colors.black)
+    elseif state.stopped then
+        c:center(lyricY, "End of playlist", leftX1, leftX2, colors.lightGray, colors.black)
+    else
+        c:center(lyricY, "Loading library...", leftX1, leftX2, colors.lightGray, colors.black)
+    end
+
+    local playbackStatus
+    local playbackColor = colors.white
+    if state.error then playbackStatus = "ERROR: " .. state.error; playbackColor = colors.red
+    elseif state.loading then playbackStatus = "BUFFERING"; playbackColor = colors.yellow
+    elseif state.paused then playbackStatus = "PAUSED"; playbackColor = colors.yellow
+    elseif state.current then playbackStatus = "PLAYING"; playbackColor = colors.lime
+    else playbackStatus = "STOPPED"; playbackColor = colors.lightGray end
+    c:center(statusY, playbackStatus, leftX1, leftX2, playbackColor, colors.black)
+
+    drawProgress(c, leftX1, progressY, leftX2)
+    drawControls(c, leftX1, controlsY, leftX2)
+    drawVolume(c, leftX1, h, leftX2)
+
+    if state.warning and h > 10 then
+        c:center(2, state.warning, leftX1, leftX2, colors.orange, colors.black)
+    elseif state.libraryCached and h > 10 then
+        c:center(2, "cached index", leftX1, leftX2, colors.orange, colors.black)
+    end
+
+    if mainW < w then drawQueue(c, dividerX + 1, 2, w, h) end
+
+    flushCanvas(c, target)
+end
+
+local function renderLoop()
+    local delay = 1 / CONFIG.uiFps
+    while state.running do
+        local ok, err = pcall(renderFrame)
+        if not ok then state.lastUiError = tostring(err) end
+        local timer = os.startTimer(delay)
+        while state.running do
+            local ev, id = os.pullEventRaw()
+            if ev == "timer" and id == timer then break end
+            if ev == "monitor_resize" or ev == "term_resize" then break end
+            if ev == "ccmusic_shutdown" then return end
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Input + Rednet
+-- ---------------------------------------------------------------------------
+
+local function hitTest(x, y)
+    for i = #state.hitboxes, 1, -1 do
+        local b = state.hitboxes[i]
+        if x >= b.x1 and x <= b.x2 and y >= b.y1 and y <= b.y2 then return b end
+    end
+    return nil
+end
+
+local function scrollQueue(delta)
+    state.queueScroll = math.max(0, state.queueScroll + delta)
+end
+
+local function handleAction(id, data, touchX)
+    if id == "prev" then choosePrevious()
+    elseif id == "pause" then togglePause()
+    elseif id == "next" then chooseNext(true)
+    elseif id == "shuffle" then toggleShuffle()
+    elseif id == "loop" then cycleLoop()
+    elseif id == "scroll_up" then scrollQueue(-1)
+    elseif id == "scroll_down" then scrollQueue(1)
+    elseif id == "track" then requestTrack(data, true)
+    elseif id == "volume" and type(data) == "table" then
+        local width = math.max(1, data.x2 - data.x1)
+        local ratio = clamp((touchX - data.x1) / width, 0, 1)
+        setVolume(ratio)
+    end
+end
+
+local function broadcastStatus(targetId)
+    if not rednet or not rednet.send then return end
+    local msg = {
+        op = "status",
+        version = VERSION,
+        title = state.current and state.current.title or nil,
+        playing = state.current ~= nil and not state.paused and not state.loading,
+        paused = state.paused,
+        loading = state.loading,
+        position = currentPositionSeconds(),
+        duration = state.current and state.current.duration or 0,
+        volume = state.volume,
+        shuffle = state.shuffle,
+        loop = state.loopMode,
+        speakers = #state.speakers,
+        error = state.error,
+    }
+    if targetId then
+        pcall(rednet.send, targetId, msg, PROTOCOL)
+    else
+        pcall(rednet.broadcast, msg, PROTOCOL)
+    end
+end
+
+local function handleRemote(sender, msg)
+    if type(msg) ~= "table" then return end
+    state.remotes[sender] = nowMs()
+    local op = msg.op
+    if op == "discover" or op == "status" or op == "ping" then
+        broadcastStatus(sender)
+    elseif op == "toggle" then togglePause(); broadcastStatus(sender)
+    elseif op == "pause" then setPaused(true); broadcastStatus(sender)
+    elseif op == "play" then setPaused(false); broadcastStatus(sender)
+    elseif op == "next" then chooseNext(true); broadcastStatus(sender)
+    elseif op == "prev" then choosePrevious(); broadcastStatus(sender)
+    elseif op == "shuffle" then toggleShuffle(); broadcastStatus(sender)
+    elseif op == "loop" then cycleLoop(); broadcastStatus(sender)
+    elseif op == "volume" then setVolume(tonumber(msg.value) or state.volume); broadcastStatus(sender)
+    elseif op == "play_index" then requestTrack(tonumber(msg.index), true); broadcastStatus(sender) end
+end
+
+local function eventLoop()
+    while state.running do
+        local ev, a, b, c = os.pullEventRaw()
+
+        if ev == "terminate" then
+            state.running = false
+            _G.__ccmusic_running = false
+            state.generation = state.generation + 1
+            stopSpeakers()
+            os.queueEvent("ccmusic_shutdown")
+            return
+
+        elseif ev == "monitor_touch" then
+            if not state.monitorName or a == state.monitorName then
+                local hit = hitTest(b, c)
+                if hit then handleAction(hit.id, hit.data, b) end
+            end
+
+        elseif ev == "mouse_click" and not state.targetIsMonitor then
+            local hit = hitTest(b, c)
+            if hit then handleAction(hit.id, hit.data, b) end
+
+        elseif ev == "mouse_scroll" and not state.targetIsMonitor then
+            scrollQueue(a > 0 and 1 or -1)
+
+        elseif ev == "key" then
+            if a == keys.space then togglePause()
+            elseif a == keys.left then choosePrevious()
+            elseif a == keys.right then chooseNext(true)
+            elseif a == keys.up then setVolume(state.volume + 0.05)
+            elseif a == keys.down then setVolume(state.volume - 0.05)
+            elseif a == keys.s and not state.searchMode then toggleShuffle()
+            elseif a == keys.l and not state.searchMode then cycleLoop()
+            elseif a == keys.f and not state.searchMode then state.searchMode = true; state.search = ""; state.queueScroll = 0
+            elseif a == keys.escape and state.searchMode then state.searchMode = false; state.search = ""; state.queueScroll = 0
+            elseif a == keys.enter and state.searchMode then
+                local results = filteredLibrary()
+                if results and results[1] then requestTrack(results[1], true) end
+                state.searchMode = false; state.search = ""; state.queueScroll = 0
+            elseif a == keys.backspace and state.searchMode then
+                state.search = state.search:sub(1, math.max(0, #state.search - 1)); state.queueScroll = 0
+            end
+
+        elseif ev == "char" and state.searchMode then
+            local ch = asciiSafe(a)
+            if ch:match("[%w%s%-%._@&,'+]" ) then state.search = state.search .. ch; state.queueScroll = 0 end
+
+        elseif ev == "peripheral" or ev == "peripheral_detach" then
+            local oldSpeakerCount = #state.speakers
+            refreshPeripherals()
+            invalidateFrame()
+            if oldSpeakerCount ~= #state.speakers then interruptAudio("speaker_change") end
+
+        elseif ev == "monitor_resize" or ev == "term_resize" then
+            invalidateFrame()
+
+        elseif ev == "rednet_message" then
+            local sender, message, protocol = a, b, c
+            if protocol == PROTOCOL then handleRemote(sender, message) end
+
+        elseif ev == "ccmusic_track_end" then
+            local generation = a
+            if generation == state.generation then chooseNext(false) end
+        end
+    end
+end
+
+local function heartbeatLoop()
+    while state.running do
+        if rednet and rednet.isOpen and rednet.isOpen() then broadcastStatus(nil) end
+        local timer = os.startTimer(2)
+        while state.running do
+            local ev, id = os.pullEventRaw()
+            if ev == "timer" and id == timer then break end
+            if ev == "ccmusic_shutdown" then return end
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Startup
+-- ---------------------------------------------------------------------------
+
+math.randomseed((os.epoch and os.epoch("utc") or os.clock() * 100000) + (os.getComputerID and os.getComputerID() or 0))
+
+local tracks, libraryErr, cached = loadLibrary()
+state.library = tracks
+state.libraryCached = cached
+state.warning = libraryErr
+state.loading = false
+
+if #tracks == 0 then
+    state.error = libraryErr or "No .sqsh tracks found"
+else
+    rebuildOrder(false)
+    local start = preferredStartIndex()
+    if start then
+        if state.shuffle then
+            local p = findOrderPos(start)
+            if p then state.order[1], state.order[p] = state.order[p], state.order[1] end
+            state.orderPos = 1
+        else
+            state.orderPos = findOrderPos(start) or 1
+        end
+        requestTrack(start, false)
+    end
+end
+
+local ok, err = pcall(function()
+    parallel.waitForAll(audioLoop, eventLoop, renderLoop, heartbeatLoop)
+end)
+
+state.running = false
+_G.__ccmusic_running = false
+stopSpeakers()
+if state.target then
+    pcall(state.target.setBackgroundColor, colors.black)
+    pcall(state.target.setTextColor, colors.white)
+    pcall(state.target.clear)
+    pcall(state.target.setCursorPos, 1, 1)
+end
+
+if not ok and tostring(err) ~= "Terminated" then
+    printError("CC-Music crashed: " .. tostring(err))
+end
