@@ -1,6 +1,8 @@
 local base = "https://raw.githubusercontent.com/Chazammm/atm10-cc-doom/main/youtube-video/"
 local files = {
   ["player.lua"] = "/video.lua",
+  ["playlist.lua"] = "/playlist.lua",
+  ["agartha.lua"] = "/agartha.lua",
   ["monitorinfo.lua"] = "/videoinfo.lua",
   ["lib/32vid-player-mini.lua"] = "/video-lib/32vid-player-mini.lua",
 }
@@ -23,4 +25,5 @@ end
 print("")
 print("Installed.")
 print("Run: videoinfo")
-print("Then: video <direct .32vid URL>")
+print("Run: video <direct .32vid URL>")
+print("Agartha playlist command (after media files are hosted): agartha")
