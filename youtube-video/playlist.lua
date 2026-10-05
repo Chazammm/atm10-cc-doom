@@ -13,6 +13,7 @@ if base:sub(-1) ~= "/" then base = base .. "/" end
 for i = 1, count do
   local url = base .. prefix .. ("%02d"):format(i) .. ".32vid"
   print(("Playing part %d/%d"):format(i, count))
-  local ok = shell.run("/video.lua", url)
+  -- Keep the last frame on-screen between HTTP parts to avoid black flashes.
+  local ok = shell.run("/video.lua", url, "keep")
   if not ok then error("Playback failed on part " .. i) end
 end
