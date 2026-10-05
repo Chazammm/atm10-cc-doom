@@ -1,24 +1,41 @@
 # Agartha V2 media
 
-Maximum-quality encode for the 143x81 monitor wall.
+The V2 binaries are hosted as **GitHub Release assets**, not committed into the repository. This keeps ~0.5 GB of generated binary video out of Git history.
 
-Profile:
-- 10 FPS
-- 143x81 CC character cells
-- 286x243 semigraphics source raster
-- 16-colour palette stabilised in 0.5 s windows
-- ordered 8x8 dithering
-- ANS-compressed combined 32vid
-- exact continuous 48 kHz mono DFPWM stream
-- 0.5 s audio prefetch across file boundaries
-- 50 parts; largest part is about 11.1 MB, below CC:Tweaked's common 16 MiB HTTP download cap
+Release tag:
 
-Upload `agartha-v2-part01.32vid` through `agartha-v2-part50.32vid` into this folder.
+`agartha-v2`
 
-Then reinstall the scripts and run:
+Expected assets:
+
+`agartha-v2-part01.32vid` through `agartha-v2-part50.32vid`.
+
+## Automatic Windows upload
+
+Put all ten downloaded ZIP packs in **Downloads**, **Desktop**, or one folder, then run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\upload-v2.ps1
+```
+
+The script:
+- installs GitHub CLI with winget when needed;
+- asks for a one-time GitHub browser login when needed;
+- finds and extracts all ten ZIPs;
+- verifies all 50 files;
+- creates the `agartha-v2` release if necessary;
+- uploads all assets automatically;
+- supports safe reruns with `--clobber`.
+
+You may also specify a source folder:
+
+```powershell
+.\upload-v2.ps1 -Source "C:\Users\you\Downloads"
+```
+
+After upload:
 
 ```
+wget run https://raw.githubusercontent.com/Chazammm/atm10-cc-doom/main/youtube-video/install.lua
 agartha-v2
 ```
-
-The V2 player defaults to `musicvideo.audio_mode=passthrough`, which preserves the original DFPWM bits through CC:Tweaked's server-side audio re-encoder and avoids the extra Lua decode/re-encode pass.
