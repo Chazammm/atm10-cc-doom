@@ -5,6 +5,7 @@ local files = {
   ["agartha.lua"] = "/agartha.lua",
   ["monitorinfo.lua"] = "/videoinfo.lua",
   ["lib/32vid-player-mini.lua"] = "/video-lib/32vid-player-mini.lua",
+  ["lib/32vid-player-fast.lua"] = "/video-lib/32vid-player-fast.lua",
 }
 
 if not http then error("HTTP API is disabled on this server.") end
@@ -22,8 +23,16 @@ for remote, localPath in pairs(files) do
   f.close()
 end
 
+-- Maximum-quality defaults. All can be changed with 'settings set ...'.
+settings.set("musicvideo.audio_mode", settings.get("musicvideo.audio_mode") or "passthrough")
+settings.set("musicvideo.drop_late_frames", settings.get("musicvideo.drop_late_frames") ~= false)
+settings.set("musicvideo.drop_factor", tonumber(settings.get("musicvideo.drop_factor")) or 1.0)
+settings.set("musicvideo.diff_rows", settings.get("musicvideo.diff_rows") ~= false)
+settings.save()
+
 print("")
-print("Installed.")
+print("Installed maximum-quality player.")
 print("Run: videoinfo")
 print("Run: video <direct .32vid URL>")
-print("Agartha playlist command (after media files are hosted): agartha")
+print("Run: agartha")
+print("Optional diagnostics: settings set musicvideo.stats true")
