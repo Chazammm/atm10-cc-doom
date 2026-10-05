@@ -1,71 +1,66 @@
-# YouTube/music-video playback on ATM10 8.2 / CC:Tweaked
+# ATM10 8.2 / CC:Tweaked video playback
 
-This folder adds a practical video + audio setup without changing the existing DOOM files.
+This folder contains the video/audio player for the 143x81 Advanced Monitor wall plus the Agartha profiles. It does not modify the DOOM setup.
 
-## Why this method
+## Install
 
-CC:Tweaked cannot decode YouTube/MP4 directly. A reliable route is to convert the video on a normal PC to Sanjuuni's **32vid** format. 32vid can contain both video and 48 kHz audio, and the bundled mini player can stream it from an HTTP URL while drawing to an Advanced Monitor and playing audio through a Speaker.
+Connect an Advanced Computer, one connected Advanced Monitor wall, and a CC:Tweaked Speaker, then run:
 
-The vendored `32vid-player-mini.lua` comes from MCJack123/sanjuuni and is MIT licensed.
-
-## In Minecraft
-
-Build/connect:
-- Advanced Computer
-- Advanced Monitor (one connected multiblock monitor wall is fine)
-- Speaker
-
-Install:
-
-```lua
+```
 wget run https://raw.githubusercontent.com/Chazammm/atm10-cc-doom/main/youtube-video/install.lua
 ```
 
-Then run:
+Commands installed at the computer root:
 
-```text
-videoinfo
+- `video <URL-or-file.32vid>` - play one combined 32vid.
+- `agartha` - original 4 FPS media.
+- `agartha-v2` - maximum-quality 10 FPS media.
+- `videoinfo` - show the monitor cell/raster dimensions.
+
+## Maximum-quality player
+
+`32vid-player-fast.lua` is the preferred player. It keeps the old Sanjuuni mini player as a compatibility fallback.
+
+It adds:
+
+- late-frame dropping instead of allowing video to drift behind audio;
+- decode-ahead and timer-based presentation;
+- changed-row and changed-palette rendering;
+- one continuous A/V clock across playlist parts;
+- speaker backpressure handling;
+- optional DFPWM passthrough mode. Because CC:Tweaked re-encodes `playAudio` PCM to DFPWM internally, the passthrough mode maps each stored DFPWM bit directly to a full-scale PCM sign value. This preserves the stored DFPWM bitstream through the server encoder and avoids a Lua DFPWM decode followed by a second lossy encode.
+
+Useful settings:
+
+```
+settings set musicvideo.audio_mode passthrough
+settings set musicvideo.drop_late_frames true
+settings set musicvideo.drop_factor 1.0
+settings set musicvideo.diff_rows true
+settings set musicvideo.stats true
+settings save
 ```
 
-It prints the exact monitor width/height Sanjuuni should target at text scale 0.5.
+## Agartha V2
 
-## Convert the video on Windows
+V2 is built specifically for the detected 143x81 monitor at text scale 0.5:
 
-1. Install/download Sanjuuni 0.5 for Windows.
-2. Obtain an MP4 copy of media you have permission to download/use.
-3. Put the MP4 next to `sanjuuni.exe`.
-4. Use the command printed by `videoinfo`, for example:
+- 10 FPS;
+- 143x81 CC cells / 286x243 semigraphics raster;
+- aspect-ratio-preserving 16:9 letterbox;
+- adaptive 16-colour palette stabilised over 0.5-second windows;
+- 8x8 ordered dithering for temporal stability;
+- per-frame ANS video compression;
+- exact continuous 48 kHz mono DFPWM;
+- 0.5 s of next-part audio prefetched at each boundary;
+- 50 independently valid 32vid parts, each under about 11.1 MB.
 
-```powershell
-.\sanjuuni.exe -i "input.mp4" -3 -d -cans -W100 -H38 -o "musicvideo.32vid"
+The files belong in `youtube-video/media-v2/` and are named `agartha-v2-part01.32vid` through `agartha-v2-part50.32vid`.
+
+Once those files are uploaded, reinstall the scripts and run:
+
+```
+agartha-v2
 ```
 
-Replace 100x38 with the dimensions printed in your world.
-
-## Hosting
-
-The player needs a direct HTTP/HTTPS URL to the `.32vid` file.
-
-For small files (<100 MB), a normal public GitHub repo raw URL can work. For larger music videos, use a GitHub Release asset or another host that provides direct binary downloads.
-
-## Play
-
-```text
-video https://example.com/musicvideo.32vid
-```
-
-To store the URL:
-
-```text
-settings set musicvideo.url https://example.com/musicvideo.32vid
-video
-```
-
-The installer writes `/video.lua`, so the `video` command remains available after the CC computer reboots.
-
-## Your requested YouTube video
-
-Requested source:
-https://www.youtube.com/watch?v=V_SBUmn8O-U
-
-The repo intentionally does not redistribute the actual YouTube media file. Convert/upload a copy you are allowed to use, then point `video` at the resulting direct `.32vid` URL.
+The original 4 FPS media remains in `youtube-video/media/`, so it continues to work as a fallback.
