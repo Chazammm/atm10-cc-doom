@@ -1685,7 +1685,10 @@ local function renderFrame()
     local mode = state.shuffle and "SHUFFLE" or "ORDER"
     c:text(math.min(w, 14), 1, mode, state.shuffle and colors.lime or colors.lightGray, colors.blue)
 
-    local statusRight = string.format("%d remote  %d spk", activeRemoteCount(), #state.speakers)
+    local rateBadge = state.sourceRate > 0 and (tostring(math.floor(state.sourceRate / 1000 + 0.5)) .. "k") or "--"
+    local audioBadge = state.activeAudioMode .. " " .. rateBadge
+    if state.audioPassthrough then audioBadge = audioBadge .. " DIRECT" end
+    local statusRight = string.format("%s  %d remote  %d spk", audioBadge, activeRemoteCount(), #state.speakers)
     c:text(math.max(1, w - #statusRight), 1, statusRight, colors.white, colors.blue)
     if state.current then
         local rightLimit = math.max(20, w - #statusRight - 2)
@@ -1722,7 +1725,9 @@ local function renderFrame()
     if state.error then playbackStatus = "ERROR: " .. state.error; playbackColor = colors.red
     elseif state.loading then playbackStatus = "BUFFERING"; playbackColor = colors.yellow
     elseif state.paused then playbackStatus = "PAUSED"; playbackColor = colors.yellow
-    elseif state.current then playbackStatus = "PLAYING"; playbackColor = colors.lime
+    elseif state.current then
+        playbackStatus = "PLAYING | " .. state.sourceFormat .. " | " .. state.activeAudioMode
+        playbackColor = colors.lime
     else playbackStatus = "STOPPED"; playbackColor = colors.lightGray end
     c:center(statusY, playbackStatus, leftX1, leftX2, playbackColor, colors.black)
 
@@ -1803,6 +1808,12 @@ local function broadcastStatus(targetId)
         shuffle = state.shuffle,
         loop = state.loopMode,
         speakers = #state.speakers,
+        audio_mode = state.activeAudioMode,
+        source_rate = state.sourceRate,
+        source_channels = state.sourceChannels,
+        source_format = state.sourceFormat,
+        passthrough = state.audioPassthrough,
+        stereo_ready = stereoRouteAvailable(),
         error = state.error,
     }
     if targetId then
