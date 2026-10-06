@@ -1,0 +1,21 @@
+{
+  "profile": "Agartha V4",
+  "monitor_cells": "164x67",
+  "monitor_blocks": "8x5",
+  "text_scale": 0.5,
+  "semigraphics_raster": "328x201",
+  "active_video_raster": "328x185",
+  "fps": 20,
+  "video_frames": 98943,
+  "video_duration_seconds": 4947.15,
+  "audio_sample_rate": 48000,
+  "audio_codec": "DFPWM1a",
+  "audio_profile": "A (neutral / 16 kHz low-pass)",
+  "audio_tracks": ["mono_fallback", "left", "right"],
+  "parts": 136,
+  "part_frames": 730,
+  "total_media_bytes": 2268815328,
+  "largest_part_bytes": 16739286,
+  "http_max_download_target_bytes": 16777216,
+  "format": "CCV4 direct-cell 2x3 semigraphics"
+}
