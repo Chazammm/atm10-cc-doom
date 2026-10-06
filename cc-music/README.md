@@ -192,7 +192,7 @@ Balance ranges from `-1.0` (left) to `+1.0` (right).
 
 ### Touch
 
-Use the on-screen previous, play/pause, next, shuffle, loop and volume controls. Queue rows are directly touchable.
+Use the on-screen previous, play/pause, next, shuffle, loop, audio-routing and volume controls. Queue rows are directly touchable.
 
 ### Keyboard
 
@@ -202,10 +202,24 @@ Use the on-screen previous, play/pause, next, shuffle, loop and volume controls.
 - `Up/Down`: volume
 - `S`: shuffle
 - `L`: loop mode
+- `A`: cycle audio routing (`AUTO -> STEREO -> MONO`)
 - `F`: search
 - `Esc`: exit search
 - `Enter`: play first search result
 - `Ctrl+T`: shutdown
+
+### Remote
+
+The Rednet remote also shows the active channel mode/sample rate and supports `A` to change audio routing remotely.
+
+## Efficiency changes in 3.0
+
+- Native 48 kHz DFPWM playback uses reusable passthrough buffers.
+- Only the last analysis window is decoded for the visualizer during passthrough, avoiding huge temporary PCM tables.
+- LEFT/RIGHT buffers are submitted in the same scheduler slice.
+- Mono multi-speaker playback also submits all speaker buffers concurrently.
+- Speaker hot-unplug during stereo playback falls back to mono for the remaining samples instead of restarting the song.
+- Dirty-line monitor rendering remains enabled, while the default visualizer/UI refresh is now 8 Hz.
 
 ## Important limitation
 
