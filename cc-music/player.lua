@@ -2362,37 +2362,39 @@ local function drawVisualizer(c, x1, y1, x2, y2)
     end
 
     if CONFIG.vizMode == "wave" then
-        -- Stereo oscilloscope: left channel above the axis, right below.
+        -- Stereo oscilloscope with independent zero-lines for L/R.
         local width = x2 - x1 + 1
-        local mid = cy
-        local amp = math.max(2, math.floor((y2 - y1) * 0.34))
-        c:hline(x1, x2, mid, "-", colors.gray, colors.black)
+        local split = cy
+        local topBase = y1 + math.max(2, math.floor((split - y1) * 0.55))
+        local bottomBase = split + math.max(2, math.floor((y2 - split) * 0.45))
+        local topAmp = math.max(1, math.min(topBase - y1 - 1, split - topBase - 1))
+        local bottomAmp = math.max(1, math.min(bottomBase - split - 1, y2 - bottomBase - 1))
+
+        c:hline(x1, x2, topBase, "-", colors.gray, colors.black)
+        c:hline(x1, x2, bottomBase, "-", colors.gray, colors.black)
         c:text(x1 + 1, y1, "WAVE  L", colors.cyan, colors.black)
-        c:text(math.max(x1 + 10, x2 - 7), y1, "R", colors.magenta, colors.black)
+        c:text(x1 + 1, split + 1, "WAVE  R", colors.magenta, colors.black)
 
         local points = math.min(#state.waveL, #state.waveR)
         if points > 1 then
-            local lastLX, lastLY, lastRX, lastRY
+            local lastLY, lastRY
             for p = 1, points do
                 local x = x1 + math.floor((p - 1) * (width - 1) / (points - 1))
                 local lv = clamp(state.waveL[p] or 0, -1, 1)
                 local rv = clamp(state.waveR[p] or 0, -1, 1)
-                local ly = clamp(mid - 1 - math.floor(lv * amp + 0.5), y1 + 1, mid - 1)
-                local ry = clamp(mid + 1 + math.floor(rv * amp + 0.5), mid + 1, y2)
+                local ly = clamp(topBase - math.floor(lv * topAmp + 0.5), y1 + 1, split - 1)
+                local ry = clamp(bottomBase - math.floor(rv * bottomAmp + 0.5), split + 2, y2)
 
                 c:cell(x, ly, "*", colors.cyan, colors.black)
                 c:cell(x, ry, "*", colors.magenta, colors.black)
 
-                -- Cheap vertical bridge when adjacent samples jump by >1 row.
-                if lastLX and x ~= lastLX then
-                    if math.abs(ly - lastLY) > 1 then
-                        c:vline(x, math.min(ly, lastLY), math.max(ly, lastLY), ".", colors.lightBlue, colors.black)
-                    end
-                    if math.abs(ry - lastRY) > 1 then
-                        c:vline(x, math.min(ry, lastRY), math.max(ry, lastRY), ".", colors.pink, colors.black)
-                    end
+                if lastLY and math.abs(ly - lastLY) > 1 then
+                    c:vline(x, math.min(ly, lastLY), math.max(ly, lastLY), ".", colors.lightBlue, colors.black)
                 end
-                lastLX, lastLY, lastRX, lastRY = x, ly, x, ry
+                if lastRY and math.abs(ry - lastRY) > 1 then
+                    c:vline(x, math.min(ry, lastRY), math.max(ry, lastRY), ".", colors.pink, colors.black)
+                end
+                lastLY, lastRY = ly, ry
             end
         end
         return
