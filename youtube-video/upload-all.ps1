@@ -8,6 +8,7 @@ New-Item -ItemType Directory $temp | Out-Null
 try {
   $jobs=@(
     @{Name="V3";Pattern="Agartha_V3_parts*.zip";Script="upload-v3.ps1"},
+    @{Name="V4 full";Pattern="Agartha_V4_parts*.zip";Script="upload-v4.ps1"},
     @{Name="V4 quality test";Pattern="Agartha_V4_60s_Test.zip";Script="upload-v4test.ps1"},
     @{Name="Audio A-B-C test";Pattern="Agartha_Audio_ABC_Test.zip";Script="upload-audiotest.ps1"}
   )
