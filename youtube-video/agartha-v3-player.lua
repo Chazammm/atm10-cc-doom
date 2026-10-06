@@ -54,6 +54,11 @@ settings.set("musicvideo.session_start", os.epoch("utc") - currentFrame * (1000 
 settings.save()
 
 local native = term.current()
+local nativePalette = {}
+for i = 0, 15 do
+    nativePalette[i] = { term.nativePaletteColor(2 ^ i) }
+end
+
 term.redirect(monitor)
 monitor.setBackgroundColor(colors.black)
 monitor.setTextColor(colors.white)
@@ -68,10 +73,17 @@ local function cleanup()
     settings.unset("musicvideo.total_frames")
     settings.unset("musicvideo.segment_base_frame")
     settings.save()
-    for i = 0, 15 do monitor.setPaletteColor(2 ^ i, term.nativePaletteColor(2 ^ i)) end
-    monitor.setBackgroundColor(colors.black)
-    monitor.setTextColor(colors.white)
-    monitor.clear()
+
+    -- Restore the monitor palette from values captured before redirecting.
+    -- Keep cleanup best-effort so a cleanup problem can never hide the real
+    -- playback error which caused us to leave the player.
+    for i = 0, 15 do
+        local p = nativePalette[i]
+        if p then pcall(monitor.setPaletteColor, 2 ^ i, p[1], p[2], p[3]) end
+    end
+    pcall(monitor.setBackgroundColor, colors.black)
+    pcall(monitor.setTextColor, colors.white)
+    pcall(monitor.clear)
     term.redirect(native)
 end
 
@@ -153,5 +165,6 @@ local ok, err = xpcall(function()
     end
 end, debug.traceback)
 
-cleanup()
+local cleanupOk, cleanupErr = pcall(cleanup)
 if not ok then error(err, 0) end
+if not cleanupOk then error("Playback ended, but cleanup failed: " .. tostring(cleanupErr), 0) end
