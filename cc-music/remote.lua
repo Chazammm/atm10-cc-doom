@@ -1,6 +1,6 @@
 -- CC-Music Pocket/Computer Remote
 local PROTOCOL = "ccmusic.v2"
-local VERSION = "3.3.0"
+local VERSION = "3.4.0"
 
 local function nowMs()
     if os.epoch then return os.epoch("utc") end
@@ -31,7 +31,7 @@ end
 
 local function send(op, value)
     local msg = { op = op }
-    if op == "volume" then msg.value = value end
+    if op == "volume" or op == "seek_rel" or op == "seek" then msg.value = value end
     if playerId then rednet.send(playerId, msg, PROTOCOL) else rednet.broadcast(msg, PROTOCOL) end
 end
 
@@ -90,6 +90,7 @@ local function draw()
         "S/L    Shuffle/Loop",
         "A      Audio mode",
         "V      Visualizer",
+        "J/K    -10s / +10s",
         "Q      Quit",
     }
     local y = math.max(11, h - #help + 1)
@@ -126,7 +127,9 @@ while true do
         elseif a == keys.s then send("shuffle")
         elseif a == keys.l then send("loop")
         elseif a == keys.a then send("audio_mode")
-        elseif a == keys.v then send("viz_mode") end
+        elseif a == keys.v then send("viz_mode")
+        elseif a == keys.j then send("seek_rel", -10)
+        elseif a == keys.k then send("seek_rel", 10) end
     elseif ev == "terminate" then
         break
     end
