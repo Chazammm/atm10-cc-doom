@@ -1,4 +1,4 @@
-# CC-Music 3.0 for ATM10 8.2 / CC:Tweaked
+# CC-Music 3.2 for ATM10 8.2 / CC:Tweaked
 
 A large-monitor music player for CC:Tweaked, built around the `Di33le/CC-Music` library and extended with true stereo support.
 
@@ -89,7 +89,7 @@ Legacy format:
 
 ### SQSH2
 
-CC-Music 3.0 stereo format:
+CC-Music 3.2 stereo format:
 
 - two independent DFPWM channels;
 - 48 kHz;
@@ -173,7 +173,8 @@ ccmusic.text_scale          0.5
 ccmusic.chunk_bytes         0
 ccmusic.hq_resampler        true
 ccmusic.legacy_resampler    sinc8
-ccmusic.ui_fps              8
+ccmusic.ui_fps              12
+ccmusic.viz_slice_bytes      512
 ccmusic.start_track         Sundress
 
 ccmusic.audio_mode          auto
@@ -236,3 +237,17 @@ So:
 - **true stereo requires SQSH2 files converted from original stereo MP3/FLAC/WAV/etc. sources**.
 
 That is a source-data limitation, not a CC:Tweaked stereo limitation.
+
+
+## Visualizer pipeline in 3.2
+
+The spectrum is no longer updated only once per large audio buffer.
+
+- 48 kHz DFPWM is scheduled in 512-byte visualizer slices (~85 ms / ~11.7 updates per second).
+- The monitor defaults to 12 UI frames per second.
+- Bars use fast attack and slower release smoothing.
+- Each band has a short peak-hold marker with gradual falloff.
+- The dotted ring reacts primarily to bass energy, with a smaller RMS contribution.
+- Dirty-line framebuffer rendering is still used, so unchanged queue/UI rows are not retransmitted to the monitor.
+
+The audio bitstream itself is unchanged: native 48 kHz SQSH2 still uses the DIRECT DFPWM path.
