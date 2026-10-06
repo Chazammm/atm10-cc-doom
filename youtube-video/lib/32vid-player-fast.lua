@@ -52,6 +52,8 @@ local dropFactor = tonumber(settings.get("musicvideo.drop_factor")) or 1.0
 local diffRows = settings.get("musicvideo.diff_rows")
 if diffRows == nil then diffRows = true end
 local showStats = settings.get("musicvideo.stats") == true
+local touchEnabled = settings.get("musicvideo.touch_controls")
+if touchEnabled == nil then touchEnabled = true end
 local adaptiveEnabled = settings.get("musicvideo.adaptive_fps")
 if adaptiveEnabled == nil then adaptiveEnabled = true end
 local fpsOverride = tonumber(settings.get("musicvideo.fps_override"))
@@ -284,6 +286,7 @@ local function togglePause()
 end
 
 local function handleTouch(_, x, y)
+    if not touchEnabled then return end
     if not x or not y then return end
     if not osdVisible and not paused then showOSD() return end
     osdUntil = os.epoch("utc") + 5000
