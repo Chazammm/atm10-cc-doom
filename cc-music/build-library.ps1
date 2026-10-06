@@ -1,6 +1,6 @@
 param(
-    [Parameter(Mandatory=$true)]
     [string]$Zip,
+    [string]$Source,
 
     [string]$Repo = "Chazammm/atm10-cc-doom",
     [string]$Tag = "cc-music-library-v1",
@@ -26,8 +26,27 @@ function Run([string]$Exe, [string[]]$Args) {
     }
 }
 
-$Zip = (Resolve-Path $Zip).Path
-if (-not (Test-Path $Zip -PathType Leaf)) { throw "ZIP not found: $Zip" }
+if (-not $Zip -and -not $Source) {
+    throw "Provide either -Zip <file.zip> or -Source <folder>."
+}
+if ($Zip -and $Source) {
+    throw "Use only one input: -Zip or -Source."
+}
+
+$inputPath = $Zip
+$inputMode = "zip"
+if ($Source) {
+    $inputPath = $Source
+    $inputMode = "folder"
+}
+
+$inputPath = (Resolve-Path $inputPath).Path
+if ($inputMode -eq "zip" -and -not (Test-Path $inputPath -PathType Leaf)) {
+    throw "ZIP not found: $inputPath"
+}
+if ($inputMode -eq "folder" -and -not (Test-Path $inputPath -PathType Container)) {
+    throw "Source folder not found: $inputPath"
+}
 
 $python = Need-Cmd "python"
 $ffmpeg = Need-Cmd "ffmpeg"
@@ -48,13 +67,19 @@ New-Item -ItemType Directory -Force -Path $src,$out | Out-Null
 try {
     Write-Host ""
     Write-Host "=== CC-Music Library Builder ===" -ForegroundColor Cyan
-    Write-Host ("Source ZIP : " + $Zip)
+    Write-Host ("Source     : " + $inputPath)
+    Write-Host ("Input mode : " + $inputMode)
     Write-Host ("Work folder: " + $work)
     Write-Host ("Release    : " + $Repo + " / " + $Tag)
     Write-Host ""
 
-    Write-Host "Extracting MP3/audio ZIP..." -ForegroundColor Cyan
-    Expand-Archive -LiteralPath $Zip -DestinationPath $src -Force
+    if ($inputMode -eq "zip") {
+        Write-Host "Extracting MP3/audio ZIP..." -ForegroundColor Cyan
+        Expand-Archive -LiteralPath $inputPath -DestinationPath $src -Force
+    } else {
+        Write-Host "Copying source audio folder..." -ForegroundColor Cyan
+        Copy-Item -LiteralPath (Join-Path $inputPath "*") -Destination $src -Recurse -Force
+    }
 
     $audioExtensions = @(".mp3",".wav",".flac",".ogg",".opus",".m4a",".aac",".wma",".aiff",".aif")
     $sources = @(Get-ChildItem -Path $src -Recurse -File | Where-Object {
@@ -164,7 +189,7 @@ try {
     Write-Host "Upload complete." -ForegroundColor Green
     Write-Host ("Manifest: https://github.com/{0}/releases/download/{1}/library.json" -f $Repo,$Tag)
     Write-Host ""
-    Write-Host "The original ZIP never left your PC; only the converted CC-Music files were uploaded." -ForegroundColor DarkGray
+    Write-Host "The original audio never left your PC; only the converted CC-Music files were uploaded." -ForegroundColor DarkGray
 }
 finally {
     if ($KeepWork) {
