@@ -1,5 +1,5 @@
 local base = "https://raw.githubusercontent.com/Chazammm/atm10-cc-doom/main/youtube-video/"
-local cacheBust = "?v=20261006-1410"
+local cacheBust = "?v=20261006-1440"
 local files = {
   ["player.lua"] = "/video.lua",
   ["playlist.lua"] = "/playlist.lua",
@@ -12,6 +12,7 @@ local files = {
   ["videobench20.lua"] = "/videobench20.lua",
   ["stereosetup.lua"] = "/stereosetup.lua",
   ["v4test.lua"] = "/v4test.lua",
+  ["v4quality.lua"] = "/v4quality.lua",
   ["audiotest.lua"] = "/audiotest.lua",
   ["lib/32vid-player-mini.lua"] = "/video-lib/32vid-player-mini.lua",
   ["lib/32vid-player-fast.lua"] = "/video-lib/32vid-player-fast.lua",
@@ -53,5 +54,6 @@ print("Run: videobench     -- normal V2 benchmark")
 print("Run: videobench20   -- 20 FPS ceiling stress test")
 print("Run: stereosetup    -- optional true stereo with 2 speakers")
 print("Run: v4test         -- 60s experimental image-quality sample")
+print("Run: v4quality      -- clean V4 quality-test command")
 print("Run: audiotest a/b/c -- compare three DFPWM audio profiles")
 print("Optional diagnostics: settings set musicvideo.stats true")
