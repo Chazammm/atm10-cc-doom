@@ -4,7 +4,7 @@ CC-Music 3.0 converter.
 
 Converts legally obtained source audio to:
   * SQSH1: 48 kHz mono DFPWM for mono sources (or --mono)
-  * SQSH2: 48 kHz true-stereo DFPWM for stereo sources
+  * SQSH2: 48 kHz true-stereo DFPWM for stereo sources\n\nAudio Profile A+ uses a 20 Hz DC/sub-bass cut, SoXR precision 33, the selected\nneutral 16 kHz low-pass, float32 stereo staging and -1 dB limiter headroom.
 
 SQSH2 stores fixed-size LEFT/RIGHT DFPWM blocks interleaved so CC:Tweaked can
 stream both channels in lockstep without buffering an entire song.
@@ -60,25 +60,75 @@ def probe_channels(ffprobe: str, src: Path) -> int:
         raise RuntimeError("Could not determine source channel count") from exc
 
 
-def profile_filter(normalize: bool) -> str:
-    # Selected "Audio Profile A": neutral, retain useful treble but keep DFPWM
-    # out of the very top octave where quantisation noise becomes objectionable.
-    stages = [
-        "aresample=48000:resampler=soxr:precision=28",
-        "lowpass=f=16000",
-    ]
-    if normalize:
-        stages.append("loudnorm=I=-16:TP=-1.5:LRA=11")
-    stages.append("alimiter=limit=0.95")
-    return ",".join(stages)
+def base_filter() -> str:
+    # Profile A+ for DFPWM:
+    # - remove inaudible DC/sub-bass which otherwise consumes DFPWM headroom;
+    # - use high precision SoXR for the single sample-rate conversion;
+    # - keep the selected neutral 16 kHz ceiling;
+    # - reserve ~1 dB of peak headroom before DFPWM quantisation.
+    return ",".join([
+        "highpass=f=20:p=2",
+        "aresample=48000:resampler=soxr:precision=33",
+        "lowpass=f=16000:p=2",
+    ])
 
+
+def loudnorm_measure(ffmpeg: str, src: Path, target_i: float, target_tp: float, target_lra: float) -> dict[str, str]:
+    filt = (
+        base_filter()
+        + f",loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}:print_format=json"
+    )
+    p = run([
+        ffmpeg, "-hide_banner", "-loglevel", "info", "-i", str(src),
+        "-map", "0:a:0", "-vn", "-ac", "2", "-ar", "48000",
+        "-af", filt, "-f", "null", "-"
+    ])
+    if p.returncode != 0:
+        raise RuntimeError(p.stderr.strip() or "Loudness analysis failed")
+
+    import json
+    import re
+
+    matches = re.findall(r"\{\s*\"input_i\".*?\}", p.stderr, flags=re.S)
+    if not matches:
+        raise RuntimeError("Could not parse FFmpeg loudnorm analysis")
+    data = json.loads(matches[-1])
+    required = ["input_i", "input_tp", "input_lra", "input_thresh", "target_offset"]
+    if any(k not in data for k in required):
+        raise RuntimeError("Incomplete loudnorm analysis")
+    return {k: str(data[k]) for k in required}
+
+
+def mastering_filter(
+    ffmpeg: str,
+    src: Path,
+    normalize: bool,
+    target_i: float = -16.0,
+    target_tp: float = -1.5,
+    target_lra: float = 11.0,
+) -> str:
+    chain = base_filter()
+    if normalize:
+        m = loudnorm_measure(ffmpeg, src, target_i, target_tp, target_lra)
+        chain += (
+            f",loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}"
+            f":measured_I={m['input_i']}"
+            f":measured_TP={m['input_tp']}"
+            f":measured_LRA={m['input_lra']}"
+            f":measured_thresh={m['input_thresh']}"
+            f":offset={m['target_offset']}"
+            f":linear=true:print_format=summary"
+        )
+    # Do not auto-raise gain in the limiter. It is only a final overshoot guard.
+    chain += ",alimiter=limit=0.891250938:level=false"
+    return chain
 
 def encode_mono(ffmpeg: str, src: Path, raw: Path, normalize: bool) -> None:
     cmd = [
         ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
         "-i", str(src), "-map", "0:a:0", "-vn",
-        "-ac", "1", "-ar", "48000",
-        "-af", profile_filter(normalize),
+        "-ac", "1",
+        "-af", mastering_filter(ffmpeg, src, normalize),
         "-c:a", "dfpwm", "-f", "dfpwm", str(raw),
     ]
     p = run(cmd)
@@ -90,14 +140,15 @@ def encode_stereo(ffmpeg: str, src: Path, left: Path, right: Path, normalize: bo
     with tempfile.TemporaryDirectory(prefix="ccmusic_stereo_") as td:
         prepared = Path(td) / "prepared.wav"
 
-        # Decode and master once, then split. -ac 2 also gives a well-defined
-        # stereo layout when --force-stereo is used on a mono source.
+        # Decode and master once in 32-bit float, then split. This avoids an
+        # unnecessary 16-bit quantisation stage before the final DFPWM encode.
+        # -ac 2 also gives a well-defined stereo layout for --force-stereo.
         prep = [
             ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
             "-i", str(src), "-map", "0:a:0", "-vn",
-            "-ac", "2", "-ar", "48000",
-            "-af", profile_filter(normalize),
-            "-c:a", "pcm_s16le", str(prepared),
+            "-ac", "2",
+            "-af", mastering_filter(ffmpeg, src, normalize),
+            "-c:a", "pcm_f32le", str(prepared),
         ]
         p = run(prep)
         if p.returncode != 0:
@@ -188,7 +239,7 @@ def main() -> int:
     )
     ap.add_argument("input", type=Path, help="Folder containing source audio")
     ap.add_argument("--output", "-o", type=Path, default=Path("sqsh48"), help="Output folder")
-    ap.add_argument("--normalize", action="store_true", help="Apply EBU-style loudness normalization")
+    ap.add_argument("--normalize", action="store_true", help="Apply measured two-pass EBU loudness normalization")
     ap.add_argument("--overwrite", action="store_true", help="Replace existing .sqsh files")
     group = ap.add_mutually_exclusive_group()
     group.add_argument("--mono", action="store_true", help="Force all sources to SQSH1 mono")
@@ -210,7 +261,7 @@ def main() -> int:
         raise SystemExit("No supported audio files found.")
 
     print(f"Found {len(sources)} source tracks.")
-    print("Mastering: Profile A / SoXR 48 kHz / 16 kHz low-pass / limiter")
+    print("Mastering: Profile A+ / SoXR precision 33 / 20 Hz HP / 16 kHz LP / -1 dB limiter")
     print("Stereo sources -> SQSH2 true stereo; mono sources -> SQSH1 mono.")
     print()
 
