@@ -1,4 +1,4 @@
-# CC-Music 3.2 for ATM10 8.2 / CC:Tweaked
+# CC-Music 3.3 for ATM10 8.2 / CC:Tweaked
 
 A large-monitor music player for CC:Tweaked, built around the `Di33le/CC-Music` library and extended with true stereo support.
 
@@ -89,7 +89,7 @@ Legacy format:
 
 ### SQSH2
 
-CC-Music 3.2 stereo format:
+CC-Music 3.3 stereo format:
 
 - two independent DFPWM channels;
 - 48 kHz;
@@ -175,6 +175,7 @@ ccmusic.hq_resampler        true
 ccmusic.legacy_resampler    sinc8
 ccmusic.ui_fps              12
 ccmusic.viz_slice_bytes      512
+ccmusic.viz_mode             classic
 ccmusic.start_track         Sundress
 
 ccmusic.audio_mode          auto
@@ -251,3 +252,20 @@ The spectrum is no longer updated only once per large audio buffer.
 - Dirty-line framebuffer rendering is still used, so unchanged queue/UI rows are not retransmitted to the monitor.
 
 The audio bitstream itself is unchanged: native 48 kHz SQSH2 still uses the DIRECT DFPWM path.
+
+
+## Visualizer modes in 3.3
+
+Cycle modes with the on-screen `VIZ:...` button or keyboard `V`.
+
+- `CLASSIC`: bass-reactive dotted ring, centered rainbow spectrum, peak-hold markers.
+- `MIRROR`: true stereo visualization. LEFT and RIGHT are analyzed independently and grow away from the center.
+- `METER`: full-height bottom-up equalizer with peak markers for maximum readability at distance.
+
+Additional UI polish:
+- clearer `CC-MUSIC` header;
+- first queued track is highlighted as the real "next" track;
+- queue header shows total library size;
+- compact Now Playing metadata row with duration, SQSH format and active visualizer mode.
+
+The visualizer changes do not alter the 48 kHz DIRECT audio bitstream.
