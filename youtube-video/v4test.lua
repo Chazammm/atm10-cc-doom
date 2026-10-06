@@ -13,7 +13,8 @@ if not ok or type(rel) ~= "table" then
   printError("Could not read V4 test release.")
   return
 end
-print("V4 experiment: 60 seconds, 20 FPS, direct 2x3-cell optimisation.")\nprint("This visual test is intentionally silent so only image quality is compared.")
+print("V4 experiment: 60 seconds, 20 FPS, direct 2x3-cell optimisation.")
+print("This visual test is intentionally silent so only image quality is compared.")
 print("Compare fine edges, faces, gradients and crawling/noise against V3.")
 local oldTouch = settings.get("musicvideo.touch_controls")
 settings.set("musicvideo.touch_controls", false)
