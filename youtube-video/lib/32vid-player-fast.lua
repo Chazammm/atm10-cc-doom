@@ -224,7 +224,18 @@ local function drawOSD()
         formatTime(currentGlobalFrame), formatTime(total), bar, mode,
         math.floor(volume * 100 + 0.5), stats.dropped, stats.adaptiveSkipped))
     local playLabel = paused and "PLAY" or "PAUSE"
-    local line2 = fitLine(("[ <10s ]          [ %-5s ]          [ +10s ]          [ VOL- ]          [ VOL+ ]          [ INFO ]          [ STOP ]"):format(playLabel))
+    local labels = {"<10s", playLabel, "+10s", "VOL-", "VOL+", "INFO", "STOP"}
+    local pieces = {}
+    for i = 1, 7 do
+        local first = math.floor((i - 1) * tw / 7) + 1
+        local last = math.floor(i * tw / 7)
+        local sw = last - first + 1
+        local label = "[" .. labels[i] .. "]"
+        local lp = math.max(0, math.floor((sw - #label) / 2))
+        local rp = math.max(0, sw - lp - #label)
+        pieces[i] = string.rep(" ", lp) .. label:sub(1, sw) .. string.rep(" ", rp)
+    end
+    local line2 = fitLine(table.concat(pieces))
     local fg, bg = blitColors[osdLight], blitColors[osdDark]
     term.setCursorPos(1, math.max(1, th - 1))
     term.blit(line1, string.rep(fg, tw), string.rep(bg, tw))
