@@ -1089,6 +1089,8 @@ local function tryStartStereoSegment(leftSegment, rightSegment, generation)
     return false
 end
 
+local playPcmBlock
+
 local function playStereoPcmBlock(leftPcm, rightPcm, generation)
     local total = math.min(#leftPcm, #rightPcm)
     local offset = 1
@@ -1098,6 +1100,17 @@ local function playStereoPcmBlock(leftPcm, rightPcm, generation)
             if ev == "ccmusic_shutdown" then return false end
         end
         if generation ~= state.generation or not state.running then return false end
+
+        if not stereoRouteAvailable() then
+            -- Hot-unplug recovery: continue the remaining samples as mono on
+            -- whatever speakers are still connected instead of restarting the song.
+            local leftRemain = offset == 1 and leftPcm or sliceSamples(leftPcm, offset)
+            local rightRemain = offset == 1 and rightPcm or sliceSamples(rightPcm, offset)
+            local downmix = makeStereoMixer()(leftRemain, rightRemain)
+            state.activeAudioMode = "MONO"
+            state.audioPassthrough = false
+            return playPcmBlock(downmix, generation)
+        end
 
         local leftSegment = offset == 1 and leftPcm or sliceSamples(leftPcm, offset)
         local rightSegment = offset == 1 and rightPcm or sliceSamples(rightPcm, offset)
@@ -1154,7 +1167,7 @@ local function playStereoPcmBlock(leftPcm, rightPcm, generation)
     return generation == state.generation and state.running
 end
 
-local function playPcmBlock(pcm, generation)
+playPcmBlock = function(pcm, generation)
     local offset = 1
     while offset <= #pcm and state.running and generation == state.generation do
         while state.paused and state.running and generation == state.generation do
