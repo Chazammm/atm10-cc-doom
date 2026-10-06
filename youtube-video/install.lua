@@ -1,5 +1,5 @@
 local base = "https://raw.githubusercontent.com/Chazammm/atm10-cc-doom/main/youtube-video/"
-local cacheBust = "?v=20261006-1650"
+local cacheBust = "?v=20261006-1720"
 local files = {
   ["player.lua"] = "/video.lua",
   ["playlist.lua"] = "/playlist.lua",
@@ -43,6 +43,9 @@ settings.set("musicvideo.drop_late_frames", settings.get("musicvideo.drop_late_f
 settings.set("musicvideo.drop_factor", tonumber(settings.get("musicvideo.drop_factor")) or 1.0)
 settings.set("musicvideo.diff_rows", settings.get("musicvideo.diff_rows") ~= false)
 settings.set("musicvideo.adaptive_fps", settings.get("musicvideo.adaptive_fps") ~= false)
+-- Touch OSD is a core V3/V4 feature. Reset stale 'false' left behind by old
+-- V4 quality-test builds.
+settings.set("musicvideo.touch_controls", true)
 settings.save()
 
 print("")
