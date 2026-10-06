@@ -1,4 +1,9 @@
--- Agartha V3: 20 FPS / 164x67 / optional true stereo.
+-- Agartha V3.1: 20 FPS / 164x67 / stereo / touch controls / prefetch.
+local startMode = ({ ... })[1] or "start"
+if startMode ~= "start" and startMode ~= "resume" then
+  print("Usage: agartha-v3 [start|resume]")
+  return
+end
 local EXPECTED_PARTS = 86
 local base = settings.get("agartha.v3_base_url")
   or "https://github.com/Chazammm/atm10-cc-doom/releases/download/agartha-v3/"
@@ -88,4 +93,8 @@ else
   print("For true stereo connect two speakers and run: stereosetup")
 end
 
-shell.run("/playlist.lua", base, "agartha-v3-part", tostring(EXPECTED_PARTS))
+local saved = tonumber(settings.get("agartha.v3.resume_frame")) or 0
+if saved > 0 and startMode == "start" then
+  print(("Saved position: %.1f min. Use 'agartha-v3 resume' to continue there."):format(saved / 20 / 60))
+end
+shell.run("/agartha-v3-player.lua", base, startMode)
