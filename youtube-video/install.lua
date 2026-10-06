@@ -1,5 +1,5 @@
 local base = "https://raw.githubusercontent.com/Chazammm/atm10-cc-doom/main/youtube-video/"
-local cacheBust = "?v=20261006-1440"
+local cacheBust = "?v=20261006-1530"
 local files = {
   ["player.lua"] = "/video.lua",
   ["playlist.lua"] = "/playlist.lua",
@@ -7,6 +7,8 @@ local files = {
   ["agartha-v2.lua"] = "/agartha-v2.lua",
   ["agartha-v3.lua"] = "/agartha-v3.lua",
   ["agartha-v3-player.lua"] = "/agartha-v3-player.lua",
+  ["agartha-v4.lua"] = "/agartha-v4.lua",
+  ["agartha-v4-player.lua"] = "/agartha-v4-player.lua",
   ["monitorinfo.lua"] = "/videoinfo.lua",
   ["videobench.lua"] = "/videobench.lua",
   ["videobench20.lua"] = "/videobench20.lua",
@@ -17,6 +19,7 @@ local files = {
   ["lib/32vid-player-mini.lua"] = "/video-lib/32vid-player-mini.lua",
   ["lib/32vid-player-fast.lua"] = "/video-lib/32vid-player-fast.lua",
   ["lib/v3-index.lua"] = "/video-lib/v3-index.lua",
+  ["lib/v4-index.lua"] = "/video-lib/v4-index.lua",
 }
 
 if not http then error("HTTP API is disabled on this server.") end
@@ -50,6 +53,8 @@ print("Run: agartha        -- current 4 FPS media")
 print("Run: agartha-v2     -- 10 FPS legacy max-quality media")
 print("Run: agartha-v3     -- V3.1 touch/prefetch/stereo")
 print("Run: agartha-v3 resume -- resume saved position")
+print("Run: agartha-v4     -- FINAL direct-cell V4 + Audio Profile A")
+print("Run: agartha-v4 resume -- resume V4 saved position")
 print("Run: videobench     -- normal V2 benchmark")
 print("Run: videobench20   -- 20 FPS ceiling stress test")
 print("Run: stereosetup    -- optional true stereo with 2 speakers")
