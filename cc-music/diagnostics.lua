@@ -1,7 +1,7 @@
 -- CC-Music 3.0 diagnostics / setup report.
 local function yn(v) return v and "YES" or "NO" end
 
-print("CC-Music 3.4 diagnostics")
+print("CC-Music 3.5 diagnostics")
 print("------------------------")
 
 local monitor, monitorName = peripheral.find("monitor", function(name) monitorName = name; return true end)
