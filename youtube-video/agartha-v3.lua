@@ -1,4 +1,5 @@
 -- Agartha V3: 20 FPS / 164x67 / optional true stereo.
+local EXPECTED_PARTS = 86
 local base = settings.get("agartha.v3_base_url")
   or "https://github.com/Chazammm/atm10-cc-doom/releases/download/agartha-v3/"
 
@@ -65,7 +66,12 @@ if count == 0 then
   printError("Agartha V3 media has not been uploaded yet.")
   return
 end
-for i = 1, maxPart do
+if count ~= EXPECTED_PARTS or maxPart ~= EXPECTED_PARTS then
+  printError(("Agartha V3 upload is incomplete: %d/%d parts ready."):format(count, EXPECTED_PARTS))
+  print("Wait until the Windows uploader says: Upload complete.")
+  return
+end
+for i = 1, EXPECTED_PARTS do
   if not present[i] then
     printError(("Agartha V3 upload is incomplete: missing part %02d."):format(i))
     print(("Currently %d part(s) are ready."):format(count))
@@ -82,4 +88,4 @@ else
   print("For true stereo connect two speakers and run: stereosetup")
 end
 
-shell.run("/playlist.lua", base, "agartha-v3-part", tostring(maxPart))
+shell.run("/playlist.lua", base, "agartha-v3-part", tostring(EXPECTED_PARTS))
