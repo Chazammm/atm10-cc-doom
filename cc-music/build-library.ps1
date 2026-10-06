@@ -7,7 +7,8 @@ param(
     [string]$Branch = "cc-music-player",
 
     [switch]$Normalize,
-    [switch]$KeepWork
+    [switch]$KeepWork,
+    [string]$CacheDir = "$env:LOCALAPPDATA\CCMusic\library-cache"
 )
 
 $ErrorActionPreference = "Stop"
@@ -222,9 +223,9 @@ if ($LASTEXITCODE -ne 0) { throw "GitHub CLI is not logged in. Run: gh auth logi
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $work = Join-Path $env:TEMP ("ccmusic-" + $stamp)
 $src = Join-Path $work "source"
-$out = Join-Path $work "sqsh2"
+$out = Join-Path $CacheDir "sqsh2"
 $converter = Join-Path $work "convert_to_sqsh48.py"
-New-Item -ItemType Directory -Force -Path $src,$out | Out-Null
+New-Item -ItemType Directory -Force -Path $src,$out,$CacheDir | Out-Null
 
 
 function Get-SqshMeta([string]$Path) {
@@ -271,6 +272,7 @@ try {
     Write-Host ("Source     : " + $inputPath)
     Write-Host ("Input mode : " + $inputMode)
     Write-Host ("Work folder: " + $work)
+    Write-Host ("SQSH cache : " + $out)
     Write-Host ("Release    : " + $Repo + " / " + $Tag)
     Write-Host ""
 
@@ -294,7 +296,7 @@ try {
     Write-Host "Downloading current Profile A+ converter..." -ForegroundColor Cyan
     Invoke-WebRequest -UseBasicParsing -Uri $raw -OutFile $converter
 
-    $converterArgs = @($converter, $src, "--output", $out, "--overwrite", "--max-file-bytes", "15728640")
+    $converterArgs = @($converter, $src, "--output", $out, "--max-file-bytes", "15728640")
     if ($Normalize) { $converterArgs += "--normalize" }
 
     Write-Host ""
@@ -440,11 +442,27 @@ try {
     Write-Host ""
     Write-Host "Replacing GitHub music-library release..." -ForegroundColor Cyan
 
-    & $gh release view $Tag --repo $Repo *> $null
-    if ($LASTEXITCODE -eq 0) {
+    # GitHub CLI writes "release not found" to stderr. With Windows
+    # PowerShell 5.1 + ErrorActionPreference=Stop that stderr becomes a
+    # terminating NativeCommandError even though "not found" is expected here.
+    # Run the existence probe in a child process and use only its exit code.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $gh
+    $psi.Arguments = ('release view "{0}" --repo "{1}"' -f $Tag, $Repo)
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $probe = [System.Diagnostics.Process]::Start($psi)
+    $probe.StandardOutput.ReadToEnd() | Out-Null
+    $probe.StandardError.ReadToEnd() | Out-Null
+    $probe.WaitForExit()
+    $releaseExists = ($probe.ExitCode -eq 0)
+    $probe.Dispose()
+
+    if ($releaseExists) {
         Write-Host "Removing previous library release/tag so old low-quality tracks disappear..."
-        & $gh release delete $Tag --repo $Repo --yes --cleanup-tag
-        if ($LASTEXITCODE -ne 0) { throw "Could not remove old release '$Tag'." }
+        Run $gh @("release","delete",$Tag,"--repo",$Repo,"--yes","--cleanup-tag")
     }
 
     Run $gh @("release","create",$Tag,"--repo",$Repo,"--title","CC-Music Library","--notes","CC-Music 3.0 / Profile A+ / 48 kHz / SQSH2 stereo library.")
