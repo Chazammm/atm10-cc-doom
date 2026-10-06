@@ -1945,6 +1945,7 @@ local function handleRemote(sender, msg)
     elseif op == "prev" then choosePrevious(); broadcastStatus(sender)
     elseif op == "shuffle" then toggleShuffle(); broadcastStatus(sender)
     elseif op == "loop" then cycleLoop(); broadcastStatus(sender)
+    elseif op == "audio_mode" then cycleAudioMode(); broadcastStatus(sender)
     elseif op == "volume" then setVolume(tonumber(msg.value) or state.volume); broadcastStatus(sender)
     elseif op == "play_index" then requestTrack(tonumber(msg.index), true); broadcastStatus(sender) end
 end
