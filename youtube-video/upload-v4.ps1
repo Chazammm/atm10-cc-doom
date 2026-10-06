@@ -144,11 +144,16 @@ try {
     try {
         $releaseId = & $gh api "repos/$Repo/releases/tags/$Tag" --jq '.id' 2>$null
         if ($LASTEXITCODE -eq 0 -and $releaseId) {
-            $assetLines = @(& $gh api --paginate "repos/$Repo/releases/$releaseId/assets?per_page=100" --jq '.[] | [.name, (.size|tostring)] | @tsv' 2>$null)
+            $assetLines = @(& $gh api --paginate "repos/$Repo/releases/$releaseId/assets?per_page=100" --jq '.[] | [.name, (.size|tostring), .state] | @tsv' 2>$null)
             if ($LASTEXITCODE -eq 0) {
                 foreach ($line in $assetLines) {
                     $cols = "$line".Split([char]9)
-                    if ($cols.Count -eq 2) { $existing[$cols[0]] = [int64]$cols[1] }
+                    if ($cols.Count -eq 3) {
+                        $existing[$cols[0]] = @{
+                            Size = [int64]$cols[1]
+                            State = $cols[2]
+                        }
+                    }
                 }
             }
         }
@@ -156,9 +161,14 @@ try {
 
     $pending = @()
     foreach ($file in $files) {
-        if ($existing.ContainsKey($file.Name) -and $existing[$file.Name] -eq $file.Length) {
+        if ($existing.ContainsKey($file.Name) -and
+            $existing[$file.Name].Size -eq $file.Length -and
+            $existing[$file.Name].State -eq "uploaded") {
             Write-Host ("Already complete: " + $file.Name) -ForegroundColor DarkGray
         } else {
+            if ($existing.ContainsKey($file.Name) -and $existing[$file.Name].State -ne "uploaded") {
+                Write-Host ("Retrying incomplete GitHub asset: " + $file.Name + " (" + $existing[$file.Name].State + ")") -ForegroundColor Yellow
+            }
             $pending += $file
         }
     }
