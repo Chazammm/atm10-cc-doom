@@ -109,12 +109,14 @@ Touch the monitor once to show the OSD. The bottom row becomes the control strip
 ## Experimental V4 image test
 
 `v4test` plays a 60-second sample encoded with a direct semigraphics-cell optimiser.
-Instead of quantising all pixels first, the encoder scores foreground/background
+Instead of quantising all pixels first, the encoder scores all foreground/background
 palette pairs directly against the six original RGB pixels represented by each
-2x3 CC cell. A weak temporal tie-breaker reduces unstable near-equal glyph choices.
+2x3 CC cell. Palette slots are matched across short temporal windows and blended
+slightly between non-cut windows to reduce palette flicker.
 
-This test intentionally uses the same 20 FPS geometry and V3 audio so visual changes
-can be compared directly.
+The test uses the same 164x67 / 20 FPS geometry as V3. It is intentionally silent:
+the point is to compare fine edges, faces, gradients and crawling/noise without
+audio influencing the comparison.
 
 ## Audio A/B/C test
 
