@@ -13,13 +13,10 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-function Need-Cmd([string]$Name) {
+function Find-Cmd([string]$Name) {
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
 
-    # WinGet sometimes installs FFmpeg successfully but the current PowerShell
-    # session does not see the newly added PATH entry. Resolve the executable
-    # directly from WinGet's package/link directories instead.
     if ($Name -eq "ffmpeg" -or $Name -eq "ffprobe") {
         $candidates = @()
 
@@ -45,7 +42,64 @@ function Need-Cmd([string]$Name) {
         }
     }
 
-    throw "Missing '$Name'. Install it, or reopen PowerShell if it was just installed."
+    return $null
+}
+
+function Need-Cmd([string]$Name) {
+    $found = Find-Cmd $Name
+    if (-not $found) { throw "Missing '$Name'." }
+    return $found
+}
+
+function Ensure-FFmpeg {
+    $ffmpeg = Find-Cmd "ffmpeg"
+    $ffprobe = Find-Cmd "ffprobe"
+    if ($ffmpeg -and $ffprobe) {
+        return @($ffmpeg, $ffprobe)
+    }
+
+    # No system FFmpeg? Bootstrap a private portable build for CC-Music.
+    # Nothing is installed globally and no admin rights are required.
+    $toolRoot = Join-Path $env:LOCALAPPDATA "CCMusic\ffmpeg"
+    $ffmpegExe = Get-ChildItem -Path $toolRoot -Filter "ffmpeg.exe" -File -Recurse -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    $ffprobeExe = Get-ChildItem -Path $toolRoot -Filter "ffprobe.exe" -File -Recurse -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+
+    if ($ffmpegExe -and $ffprobeExe) {
+        Write-Host ("Using portable FFmpeg: " + $ffmpegExe.FullName) -ForegroundColor Yellow
+        return @($ffmpegExe.FullName, $ffprobeExe.FullName)
+    }
+
+    Write-Host "FFmpeg was not found. Downloading a private portable build..." -ForegroundColor Cyan
+    New-Item -ItemType Directory -Force -Path $toolRoot | Out-Null
+    $zipPath = Join-Path $env:TEMP "ccmusic-ffmpeg.zip"
+    $downloadUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri $downloadUrl -OutFile $zipPath
+    } catch {
+        throw "Could not download portable FFmpeg: $($_.Exception.Message)"
+    }
+
+    Write-Host "Extracting portable FFmpeg..." -ForegroundColor Cyan
+    if (Test-Path $toolRoot) {
+        Get-ChildItem -Path $toolRoot -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Expand-Archive -LiteralPath $zipPath -DestinationPath $toolRoot -Force
+    Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+
+    $ffmpegExe = Get-ChildItem -Path $toolRoot -Filter "ffmpeg.exe" -File -Recurse -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    $ffprobeExe = Get-ChildItem -Path $toolRoot -Filter "ffprobe.exe" -File -Recurse -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+
+    if (-not $ffmpegExe -or -not $ffprobeExe) {
+        throw "Portable FFmpeg download completed, but ffmpeg.exe/ffprobe.exe were not found."
+    }
+
+    Write-Host ("Portable FFmpeg ready: " + $ffmpegExe.FullName) -ForegroundColor Green
+    return @($ffmpegExe.FullName, $ffprobeExe.FullName)
 }
 
 function Run([string]$Exe, [string[]]$Args) {
@@ -78,11 +132,12 @@ if ($inputMode -eq "folder" -and -not (Test-Path $inputPath -PathType Container)
 }
 
 $python = Need-Cmd "python"
-$ffmpeg = Need-Cmd "ffmpeg"
-$ffprobe = Need-Cmd "ffprobe"
+$ff = Ensure-FFmpeg
+$ffmpeg = $ff[0]
+$ffprobe = $ff[1]
 $gh = Need-Cmd "gh"
 
-# Make the resolved FFmpeg tools visible to the Python converter as well.
+# Make the resolved/private FFmpeg tools visible to the Python converter.
 $ffmpegDir = Split-Path $ffmpeg -Parent
 $ffprobeDir = Split-Path $ffprobe -Parent
 $extraPath = @($ffmpegDir, $ffprobeDir) | Select-Object -Unique
