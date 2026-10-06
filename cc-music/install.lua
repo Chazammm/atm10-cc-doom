@@ -1,6 +1,6 @@
 -- CC-Music one-line installer for CC:Tweaked / ATM10 8.2
 local BASE = "https://raw.githubusercontent.com/Chazammm/atm10-cc-doom/cc-music-player/cc-music/"
-local CACHE = "?v=3.0.3"
+local CACHE = "?v=3.1.0"
 local DIR = "/ccmusic"
 
 local function get(url)
@@ -70,10 +70,10 @@ inf.write(infoLauncher)
 inf.close()
 
 print("")
-print("CC-Music 3.0 installed.")
+print("CC-Music 3.1 installed.")
 print("Run: music")
 print("Stereo setup: music-stereo")
 print("Diagnostics: music-info")
 print("Remote: /ccmusic/remote.lua")
-print("Optimal monitor: 8 wide x 6 high at text scale 0.5 (164x81 cells)")
-print("Tracks are streamed from Di33le/CC-Music on GitHub.")
+print("Recommended monitor: 8 wide x 5 high at text scale 0.5 (164x67 cells)")
+print("Tracks are streamed from your cc-music-library-v1 GitHub release.")
