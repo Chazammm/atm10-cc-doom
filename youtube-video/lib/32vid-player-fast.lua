@@ -21,6 +21,8 @@ local dropFactor = tonumber(settings.get("musicvideo.drop_factor")) or 1.0
 local diffRows = settings.get("musicvideo.diff_rows")
 if diffRows == nil then diffRows = true end
 local showStats = settings.get("musicvideo.stats") == true
+local fpsOverride = tonumber(settings.get("musicvideo.fps_override"))
+local muteAudio = settings.get("musicvideo.mute") == true
 
 -- A playlist can keep one media clock across multiple HTTP files. This makes
 -- part boundaries behave as one continuous movie instead of re-syncing A/V.
@@ -64,6 +66,8 @@ if width > tw or height > th then
     file.close()
     error(("Video is %dx%d cells, terminal is only %dx%d"):format(width, height, tw, th))
 end
+
+if fpsOverride and fpsOverride > 0 then fps = fpsOverride end
 
 local cellCount = width * height
 local frameMs = 1000 / fps
@@ -300,7 +304,7 @@ for _ = 1, nframes do
 
     if frameType == 1 then
         local audio = file.read(size)
-        if speaker then
+        if speaker and not muteAudio then
             local samples
             if bit_band(flags, 12) == 0 then
                 samples = pcmDecode(audio)
