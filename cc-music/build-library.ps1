@@ -78,7 +78,7 @@ try {
         Expand-Archive -LiteralPath $inputPath -DestinationPath $src -Force
     } else {
         Write-Host "Copying source audio folder..." -ForegroundColor Cyan
-        Copy-Item -LiteralPath (Join-Path $inputPath "*") -Destination $src -Recurse -Force
+        Copy-Item -Path (Join-Path $inputPath "*") -Destination $src -Recurse -Force
     }
 
     $audioExtensions = @(".mp3",".wav",".flac",".ogg",".opus",".m4a",".aac",".wma",".aiff",".aif")
