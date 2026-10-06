@@ -2,7 +2,7 @@
 -- Designed for large Advanced Monitor walls and SQSH1/SQSH2 (DFPWM) audio files.
 -- Repository default: https://github.com/Di33le/CC-Music
 
-local VERSION = "3.3.0"
+local VERSION = "3.4.0"
 local PROTOCOL = "ccmusic.v2"
 local INDEX_CACHE = "/.ccmusic-index.json"
 
@@ -158,6 +158,17 @@ local function fmtTime(seconds)
     local s = seconds % 60
     if h > 0 then return string.format("%d:%02d:%02d", h, m, s) end
     return string.format("%d:%02d", m, s)
+end
+
+local function marqueeText(text, width)
+    text = asciiSafe(text or "")
+    width = math.max(1, math.floor(width or #text))
+    if #text <= width then return text end
+    local gap = "   "
+    local cycle = text .. gap
+    local offset = math.floor(nowMs() / 320) % #cycle
+    local doubled = cycle .. cycle
+    return doubled:sub(offset + 1, offset + width)
 end
 
 local function urlEncode(s)
@@ -438,6 +449,7 @@ local state = {
     audioPassthrough = false,
     streamPart = 0,
     streamPartCount = 0,
+    requestedSeek = nil,
 }
 
 if state.loopMode ~= "all" and state.loopMode ~= "one" and state.loopMode ~= "off" then
@@ -539,6 +551,26 @@ end
 
 local function togglePause()
     if state.current then setPaused(not state.paused) end
+end
+
+local function requestSeek(seconds)
+    if not state.current then return end
+    local duration = tonumber(state.current.duration) or 0
+    if duration <= 0 then return end
+
+    seconds = clamp(tonumber(seconds) or 0, 0, math.max(0, duration - 0.05))
+    state.requestedSeek = seconds
+    state.playedSamples = math.floor(seconds * 48000 + 0.5)
+    state.flight = nil
+    state.loading = true
+    state.error = nil
+    state.paused = false
+    state.generation = state.generation + 1
+    interruptAudio("seek")
+end
+
+local function seekRelative(delta)
+    requestSeek(currentPositionSeconds() + (tonumber(delta) or 0))
 end
 
 -- ---------------------------------------------------------------------------
@@ -1545,7 +1577,9 @@ local function audioLoop()
         else
             state.loading = true
             state.error = nil
-            state.playedSamples = 0
+            local seekSeconds = tonumber(state.requestedSeek) or 0
+            state.requestedSeek = nil
+            state.playedSamples = math.floor(seekSeconds * 48000 + 0.5)
             state.flight = nil
             state.lyrics = {}
             state.sourceChannels = tonumber(track.channels) or 1
@@ -1570,6 +1604,8 @@ local function audioLoop()
             else
                 local firstHeader = nil
                 local totalAudioBytes = 0
+                local seekRemainingBytes = nil
+                local skippedAudioBytes = 0
 
                 -- Decoder/resampler state deliberately lives across release
                 -- parts. Oversized albums are just one continuous DFPWM stream
@@ -1629,6 +1665,7 @@ local function audioLoop()
                         state.sourceRate = header.rate
                         state.sourceFormat = header.format
                         state.lyrics = parseLyrics(header.lyricsRaw)
+                        seekRemainingBytes = math.max(0, math.floor(seekSeconds * header.rate / 8 + 0.5))
                     else
                         if header.rate ~= firstHeader.rate
                             or header.channels ~= firstHeader.channels
@@ -1641,9 +1678,51 @@ local function audioLoop()
 
                     totalAudioBytes = totalAudioBytes + header.audioBytes
                     local remaining = header.audioBytes
+
+                    -- Seek is performed on DFPWM byte boundaries. For SQSH2 we
+                    -- align to a complete interleaved L/R block so the next
+                    -- read still starts at a valid LEFT block boundary.
+                    if seekRemainingBytes and seekRemainingBytes > 0 then
+                        if seekRemainingBytes >= remaining then
+                            seekRemainingBytes = seekRemainingBytes - remaining
+                            skippedAudioBytes = skippedAudioBytes + remaining
+                            remaining = 0
+                        else
+                            local skipBytes
+                            if header.channels == 2 then
+                                local block = header.blockBytes or CONFIG.stereoChunkBytes
+                                skipBytes = math.floor(seekRemainingBytes / block) * block
+                                if skipBytes > 0 then
+                                    local discarded = readExact(handle, skipBytes * 2)
+                                    if not discarded then
+                                        state.error = "Seek failed while skipping SQSH2 data"
+                                    end
+                                end
+                            else
+                                skipBytes = math.floor(seekRemainingBytes / 256) * 256
+                                if skipBytes > 0 then
+                                    local discarded = readExact(handle, skipBytes)
+                                    if not discarded then
+                                        state.error = "Seek failed while skipping SQSH1 data"
+                                    end
+                                end
+                            end
+                            skipBytes = math.min(skipBytes or 0, remaining)
+                            seekRemainingBytes = 0
+                            skippedAudioBytes = skippedAudioBytes + skipBytes
+                            remaining = remaining - skipBytes
+
+                            if firstHeader and firstHeader.rate > 0 then
+                                state.playedSamples = math.floor(skippedAudioBytes * 8 * 48000 / firstHeader.rate + 0.5)
+                            end
+                        end
+                    end
+
                     state.loading = false
 
-                    if header.channels == 2 then
+                    if remaining <= 0 then
+                        -- Entire segment was before the seek target.
+                    elseif header.channels == 2 then
                         while state.running and generation == state.generation and remaining > 0 do
                             while state.paused and state.running and generation == state.generation do
                                 local ev = os.pullEventRaw()
@@ -1722,7 +1801,7 @@ local function audioLoop()
                             end
                             if not blockPlaybackOk then break end
                         end
-                    else
+                    elseif header.channels == 1 then
                         while state.running and generation == state.generation and remaining > 0 do
                             while state.paused and state.running and generation == state.generation do
                                 local ev = os.pullEventRaw()
@@ -2151,14 +2230,20 @@ local function drawButton(c, x, y, text, active, id)
 end
 
 local function drawControls(c, x1, y, x2)
+    -- Transport row: deliberately large/frequent actions.
     local x = x1
     x = drawButton(c, x, y, "|<", false, "prev")
-    x = drawButton(c, x, y, state.paused and ">" or "||", state.paused, "pause")
+    if x + 5 <= x2 then x = drawButton(c, x, y, "-10", false, "back10") end
+    x = drawButton(c, x, y, state.paused and "PLAY" or "PAUSE", state.paused, "pause")
+    if x + 5 <= x2 then x = drawButton(c, x, y, "+10", false, "forward10") end
     x = drawButton(c, x, y, ">|", false, "next")
-    if x + 10 <= x2 then x = drawButton(c, x, y, "SHUFFLE", state.shuffle, "shuffle") end
-    if x + 9 <= x2 then x = drawButton(c, x, y, "LOOP:" .. state.loopMode:upper(), state.loopMode ~= "off", "loop") end
-    if x + 12 <= x2 then x = drawButton(c, x, y, "AUDIO:" .. CONFIG.audioMode:upper(), CONFIG.audioMode ~= "mono", "audio_mode") end
-    if x + 13 <= x2 then x = drawButton(c, x, y, "VIZ:" .. CONFIG.vizMode:upper(), true, "viz_mode") end
+
+    -- Mode row: settings which are touched less frequently.
+    x = x1
+    if x + 10 <= x2 then x = drawButton(c, x, y + 1, "SHUFFLE", state.shuffle, "shuffle") end
+    if x + 9 <= x2 then x = drawButton(c, x, y + 1, "LOOP:" .. state.loopMode:upper(), state.loopMode ~= "off", "loop") end
+    if x + 12 <= x2 then x = drawButton(c, x, y + 1, "AUDIO:" .. CONFIG.audioMode:upper(), CONFIG.audioMode ~= "mono", "audio_mode") end
+    if x + 13 <= x2 then x = drawButton(c, x, y + 1, "VIZ:" .. CONFIG.vizMode:upper(), true, "viz_mode") end
 end
 
 local function drawProgress(c, x1, y, x2)
@@ -2168,16 +2253,20 @@ local function drawProgress(c, x1, y, x2)
     local right = fmtTime(total)
     c:text(x1, y, left, colors.lightGray, colors.black)
     c:text(x2 - #right + 1, y, right, colors.lightGray, colors.black)
+
     local barX1 = x1 + #left + 2
     local barX2 = x2 - #right - 2
     if barX2 >= barX1 then
         local width = barX2 - barX1 + 1
         local ratio = total > 0 and clamp(cur / total, 0, 1) or 0
-        local filled = math.floor(width * ratio + 0.5)
+        local playhead = math.floor((width - 1) * ratio + 0.5)
+
         for i = 0, width - 1 do
-            local col = i < filled and colors.lightBlue or colors.gray
+            local col = i <= playhead and colors.lightBlue or colors.gray
             c:cell(barX1 + i, y, " ", col, col)
         end
+        c:cell(barX1 + playhead, y, " ", colors.white, colors.white)
+        addHitbox("seek", barX1, y, barX2, y, { x1 = barX1, x2 = barX2, duration = total })
     end
 end
 
@@ -2242,7 +2331,8 @@ local function renderFrame()
     c:text(math.max(1, w - #statusRight), 1, statusRight, colors.white, colors.blue)
     if state.current then
         local rightLimit = math.max(20, w - #statusRight - 2)
-        c:center(1, state.current.title, 26, rightLimit, colors.yellow, colors.blue)
+        local titleWidth = math.max(8, rightLimit - 26 + 1)
+        c:center(1, marqueeText(state.current.title, titleWidth), 26, rightLimit, colors.yellow, colors.blue)
     else
         c:center(1, "CC-Music " .. VERSION, 20, w - #statusRight - 2, colors.yellow, colors.blue)
     end
@@ -2258,7 +2348,7 @@ local function renderFrame()
     -- Main visual area
     local controlsY = math.max(6, h - 2)
     local progressY = controlsY - 1
-    local lyricY = math.max(4, progressY - 2)
+    local lyricY = math.max(5, progressY - 2)
     local statusY = lyricY + 1
     drawVisualizer(c, leftX1, 3, leftX2, math.max(5, lyricY - 1))
 
@@ -2298,7 +2388,7 @@ local function renderFrame()
             subline = "cached library"
             subColor = colors.orange
         elseif state.current then
-            subline = string.format("%s  |  %s  |  %s", fmtTime(state.current.duration), state.sourceFormat, CONFIG.vizMode:upper())
+            subline = string.format("%s / %s  |  %s  |  %s", fmtTime(currentPositionSeconds()), fmtTime(state.current.duration), state.sourceFormat, CONFIG.vizMode:upper())
             subColor = colors.lightGray
         end
         if subline then c:center(2, subline, leftX1, leftX2, subColor, colors.black) end
@@ -2342,7 +2432,9 @@ end
 
 local function handleAction(id, data, touchX)
     if id == "prev" then choosePrevious()
+    elseif id == "back10" then seekRelative(-10)
     elseif id == "pause" then togglePause()
+    elseif id == "forward10" then seekRelative(10)
     elseif id == "next" then chooseNext(true)
     elseif id == "shuffle" then toggleShuffle()
     elseif id == "loop" then cycleLoop()
@@ -2351,6 +2443,10 @@ local function handleAction(id, data, touchX)
     elseif id == "scroll_up" then scrollQueue(-1)
     elseif id == "scroll_down" then scrollQueue(1)
     elseif id == "track" then requestTrack(data, true)
+    elseif id == "seek" and type(data) == "table" then
+        local width = math.max(1, data.x2 - data.x1)
+        local ratio = clamp((touchX - data.x1) / width, 0, 1)
+        requestSeek((data.duration or 0) * ratio)
     elseif id == "volume" and type(data) == "table" then
         local width = math.max(1, data.x2 - data.x1)
         local ratio = clamp((touchX - data.x1) / width, 0, 1)
@@ -2405,6 +2501,8 @@ local function handleRemote(sender, msg)
     elseif op == "loop" then cycleLoop(); broadcastStatus(sender)
     elseif op == "audio_mode" then cycleAudioMode(); broadcastStatus(sender)
     elseif op == "viz_mode" then cycleVizMode(); broadcastStatus(sender)
+    elseif op == "seek_rel" then seekRelative(tonumber(msg.value) or 0); broadcastStatus(sender)
+    elseif op == "seek" then requestSeek(tonumber(msg.value) or 0); broadcastStatus(sender)
     elseif op == "volume" then setVolume(tonumber(msg.value) or state.volume); broadcastStatus(sender)
     elseif op == "play_index" then requestTrack(tonumber(msg.index), true); broadcastStatus(sender) end
 end
@@ -2444,6 +2542,8 @@ local function eventLoop()
             elseif a == keys.l and not state.searchMode then cycleLoop()
             elseif a == keys.a and not state.searchMode then cycleAudioMode()
             elseif a == keys.v and not state.searchMode then cycleVizMode()
+            elseif a == keys.j and not state.searchMode then seekRelative(-10)
+            elseif a == keys.k and not state.searchMode then seekRelative(10)
             elseif a == keys.f and not state.searchMode then state.searchMode = true; state.search = ""; state.queueScroll = 0
             elseif a == keys.escape and state.searchMode then state.searchMode = false; state.search = ""; state.queueScroll = 0
             elseif a == keys.enter and state.searchMode then
