@@ -2,7 +2,7 @@
 -- Designed for large Advanced Monitor walls and SQSH1/SQSH2 (DFPWM) audio files.
 -- Repository default: https://github.com/Di33le/CC-Music
 
-local VERSION = "3.4.0"
+local VERSION = "3.5.0"
 local PROTOCOL = "ccmusic.v2"
 local INDEX_CACHE = "/.ccmusic-index.json"
 
@@ -40,6 +40,9 @@ defineSetting("ccmusic.viz_mode", "classic", "string", "Visualizer: classic, mir
 defineSetting("ccmusic.start_track", "Sundress", "string", "Preferred title substring to play first")
 defineSetting("ccmusic.library_repo", "Chazammm/atm10-cc-doom", "string", "Repository containing the CC-Music release library")
 defineSetting("ccmusic.library_tag", "cc-music-library-v1", "string", "GitHub release tag containing library.json and SQSH assets")
+defineSetting("ccmusic.resume_enabled", true, "boolean", "Resume the last track and position after restart")
+defineSetting("ccmusic.resume_track", "", "string", "Last played logical track name")
+defineSetting("ccmusic.resume_position", 0, "number", "Last played position in seconds")
 defineSetting("ccmusic.audio_mode", "auto", "string", "Audio routing: auto, stereo, or mono")
 defineSetting("ccmusic.left_speaker", "", "string", "Peripheral name for the left stereo speaker")
 defineSetting("ccmusic.right_speaker", "", "string", "Peripheral name for the right stereo speaker")
@@ -70,6 +73,7 @@ local CONFIG = {
     startTrack = tostring(getSetting("ccmusic.start_track", "Sundress")),
     libraryRepo = tostring(getSetting("ccmusic.library_repo", "Chazammm/atm10-cc-doom")),
     libraryTag = tostring(getSetting("ccmusic.library_tag", "cc-music-library-v1")),
+    resumeEnabled = getSetting("ccmusic.resume_enabled", true) ~= false,
     audioMode = tostring(getSetting("ccmusic.audio_mode", "auto")):lower(),
     leftSpeaker = tostring(getSetting("ccmusic.left_speaker", "")),
     rightSpeaker = tostring(getSetting("ccmusic.right_speaker", "")),
@@ -450,6 +454,12 @@ local state = {
     streamPart = 0,
     streamPartCount = 0,
     requestedSeek = nil,
+    manualQueue = {},
+    queueAddMode = false,
+    favorites = {},
+    favoritesOnly = false,
+    settingsOpen = false,
+    lastResumeSaveMs = 0,
 }
 
 if state.loopMode ~= "all" and state.loopMode ~= "one" and state.loopMode ~= "off" then
@@ -573,6 +583,100 @@ local function seekRelative(delta)
     requestSeek(currentPositionSeconds() + (tonumber(delta) or 0))
 end
 
+local FAVORITES_FILE = "/ccmusic/favorites.json"
+
+local function loadFavorites()
+    if not fs or not fs.exists(FAVORITES_FILE) then return {} end
+    local h = fs.open(FAVORITES_FILE, "r")
+    if not h then return {} end
+    local raw = h.readAll()
+    h.close()
+    local data = jsonDecode(raw)
+    local out = {}
+    if type(data) == "table" then
+        for _, name in ipairs(data) do
+            if type(name) == "string" and name ~= "" then out[name] = true end
+        end
+    end
+    return out
+end
+
+local function saveFavorites()
+    if not fs then return end
+    local list = {}
+    for name, enabled in pairs(state.favorites) do
+        if enabled then list[#list + 1] = name end
+    end
+    table.sort(list)
+    local raw = jsonEncode(list)
+    if not raw then return end
+    local h = fs.open(FAVORITES_FILE, "w")
+    if h then h.write(raw); h.close() end
+end
+
+local function isFavorite(indexOrTrack)
+    local tr = type(indexOrTrack) == "table" and indexOrTrack or state.library[indexOrTrack]
+    return tr and state.favorites[tr.name] == true or false
+end
+
+local function toggleFavorite(index)
+    index = index or state.currentIndex
+    local tr = index and state.library[index] or nil
+    if not tr then return end
+    if state.favorites[tr.name] then state.favorites[tr.name] = nil else state.favorites[tr.name] = true end
+    saveFavorites()
+end
+
+local function favoriteCount()
+    local n = 0
+    for _, enabled in pairs(state.favorites) do if enabled then n = n + 1 end end
+    return n
+end
+
+local function saveResume(force)
+    if not CONFIG.resumeEnabled or not state.current then return end
+    local now = nowMs()
+    if not force and now - (state.lastResumeSaveMs or 0) < 5000 then return end
+    state.lastResumeSaveMs = now
+    saveSetting("ccmusic.resume_track", state.current.name or "")
+    saveSetting("ccmusic.resume_position", currentPositionSeconds())
+end
+
+local function toggleResume()
+    CONFIG.resumeEnabled = not CONFIG.resumeEnabled
+    saveSetting("ccmusic.resume_enabled", CONFIG.resumeEnabled)
+    if CONFIG.resumeEnabled then saveResume(true) end
+end
+
+local function queueTrackNext(index)
+    index = tonumber(index)
+    if not index or not state.library[index] then return false end
+    state.manualQueue[#state.manualQueue + 1] = index
+    return true
+end
+
+local function popQueuedTrack()
+    while #state.manualQueue > 0 do
+        local index = table.remove(state.manualQueue, 1)
+        if state.library[index] then return index end
+    end
+    return nil
+end
+
+local function toggleQueueAddMode()
+    state.queueAddMode = not state.queueAddMode
+end
+
+local function toggleFavoritesOnly()
+    state.favoritesOnly = not state.favoritesOnly
+    state.queueScroll = 0
+end
+
+local function toggleSettings()
+    state.settingsOpen = not state.settingsOpen
+end
+
+
 -- ---------------------------------------------------------------------------
 -- Playlist / queue
 -- ---------------------------------------------------------------------------
@@ -622,6 +726,7 @@ end
 
 local function requestTrack(index, addHistory)
     if not index or not state.library[index] then return end
+    if state.current and state.currentIndex ~= index then saveResume(true) end
     if addHistory and state.currentIndex and state.currentIndex ~= index then
         state.history[#state.history + 1] = state.currentIndex
         if #state.history > 100 then table.remove(state.history, 1) end
@@ -651,6 +756,12 @@ local function chooseNext(manual)
     if #state.order == 0 then return end
     if not manual and state.loopMode == "one" then
         restartCurrent()
+        return
+    end
+
+    local queued = popQueuedTrack()
+    if queued then
+        requestTrack(queued, true)
         return
     end
 
@@ -2145,11 +2256,14 @@ local function drawVisualizer(c, x1, y1, x2, y2)
 end
 
 local function filteredLibrary()
-    if not state.searchMode or state.search == "" then return nil end
-    local q = state.search:lower()
+    if not state.searchMode and not state.favoritesOnly then return nil end
+    local q = state.searchMode and state.search:lower() or ""
     local out = {}
     for i = 1, #state.library do
-        if state.library[i].title:lower():find(q, 1, true) then out[#out + 1] = i end
+        local tr = state.library[i]
+        local matchesSearch = (q == "") or tr.title:lower():find(q, 1, true)
+        local matchesFavorite = (not state.favoritesOnly) or isFavorite(tr)
+        if matchesSearch and matchesFavorite then out[#out + 1] = i end
     end
     return out
 end
@@ -2166,13 +2280,18 @@ local function drawQueue(c, x1, y1, x2, y2)
     if x2 <= x1 then return end
     local width = x2 - x1 + 1
     local searchResults = filteredLibrary()
+
     local heading
     if state.searchMode then
         heading = "SEARCH: " .. (state.search ~= "" and state.search or "type...")
+    elseif state.favoritesOnly then
+        heading = "FAVORITES  " .. tostring(favoriteCount())
     else
         heading = "UP NEXT  " .. tostring(#state.library) .. " TRACKS"
+        if #state.manualQueue > 0 then heading = heading .. "  Q:" .. tostring(#state.manualQueue) end
     end
-    c:text(x1 + 1, y1, heading, state.searchMode and colors.yellow or colors.white, colors.black, math.max(1, width - 9))
+
+    c:text(x1 + 1, y1, heading, state.searchMode and colors.yellow or (state.favoritesOnly and colors.pink or colors.white), colors.black, math.max(1, width - 9))
     c:text(x2 - 6, y1, "[U][D]", colors.lightGray, colors.black)
     addHitbox("scroll_up", x2 - 6, y1, x2 - 4, y1)
     addHitbox("scroll_down", x2 - 2, y1, x2, y1)
@@ -2180,41 +2299,59 @@ local function drawQueue(c, x1, y1, x2, y2)
     local firstY = y1 + 1
     local rows = math.max(0, y2 - firstY + 1)
     local maxScroll
-    if searchResults then maxScroll = math.max(0, #searchResults - rows)
-    else maxScroll = math.max(0, #state.order - 1 - rows) end
+
+    if searchResults then
+        maxScroll = math.max(0, #searchResults - rows)
+    else
+        maxScroll = math.max(0, #state.manualQueue + #state.order - 1 - rows)
+    end
     state.queueScroll = clamp(state.queueScroll, 0, maxScroll)
 
     for r = 0, rows - 1 do
-        local itemIndex, ordinal
+        local itemIndex, ordinal, queued
         if searchResults then
             local p = state.queueScroll + r + 1
             itemIndex = searchResults[p]
             ordinal = p
         else
             local off = state.queueScroll + r + 1
-            itemIndex = nextQueueTrackIndex(off)
-            ordinal = off
-            if off > #state.order - 1 then itemIndex = nil end
+            if off <= #state.manualQueue then
+                itemIndex = state.manualQueue[off]
+                ordinal = off
+                queued = true
+            else
+                local orderOff = off - #state.manualQueue
+                itemIndex = nextQueueTrackIndex(orderOff)
+                ordinal = orderOff
+                if orderOff > #state.order - 1 then itemIndex = nil end
+            end
         end
 
         local y = firstY + r
         if itemIndex and state.library[itemIndex] then
             local tr = state.library[itemIndex]
             local time = fmtTime(tr.duration)
-            local prefix = string.format("%2d. ", ordinal)
-            local titleRoom = width - #prefix - #time - 3
+            local fav = isFavorite(tr)
+            local marker = queued and "Q" or ((not searchResults and not state.favoritesOnly and r == 0 and #state.manualQueue == 0) and ">" or " ")
+            local star = fav and "*" or " "
+            local prefix = string.format("%s%s%2d ", marker, star, ordinal)
+            local titleRoom = width - #prefix - #time - 2
             if titleRoom < 3 then titleRoom = 3 end
             local title = tr.title
             if #title > titleRoom then title = title:sub(1, titleRoom - 1) .. ">" end
+
             local selected = itemIndex == state.currentIndex
-            local isNext = (not searchResults and r == 0)
             local bg = selected and colors.gray or colors.black
-            local fg = selected and colors.white or (isNext and colors.lightBlue or colors.lightGray)
+            local fg
+            if selected then fg = colors.white
+            elseif queued then fg = colors.orange
+            elseif fav then fg = colors.pink
+            elseif marker == ">" then fg = colors.lightBlue
+            else fg = colors.lightGray end
+
             c:fill(x1, y, x2, y, bg)
-            local marker = isNext and "> " or "  "
-            local linePrefix = marker .. prefix
-            c:text(x1, y, linePrefix .. title, fg, bg, width - #time - 1)
-            c:text(x2 - #time + 1, y, time, selected and colors.white or (isNext and colors.lightBlue or colors.gray), bg)
+            c:text(x1, y, prefix .. title, fg, bg, width - #time - 1)
+            c:text(x2 - #time + 1, y, time, selected and colors.white or fg, bg)
             addHitbox("track", x1, y, x2, y, itemIndex)
         end
     end
@@ -2244,6 +2381,10 @@ local function drawControls(c, x1, y, x2)
     if x + 9 <= x2 then x = drawButton(c, x, y + 1, "LOOP:" .. state.loopMode:upper(), state.loopMode ~= "off", "loop") end
     if x + 12 <= x2 then x = drawButton(c, x, y + 1, "AUDIO:" .. CONFIG.audioMode:upper(), CONFIG.audioMode ~= "mono", "audio_mode") end
     if x + 13 <= x2 then x = drawButton(c, x, y + 1, "VIZ:" .. CONFIG.vizMode:upper(), true, "viz_mode") end
+    if x + 6 <= x2 then x = drawButton(c, x, y + 1, isFavorite(state.currentIndex) and "FAV*" or "FAV", isFavorite(state.currentIndex), "favorite") end
+    if x + 7 <= x2 then x = drawButton(c, x, y + 1, "FAVS", state.favoritesOnly, "favorites_only") end
+    if x + 5 <= x2 then x = drawButton(c, x, y + 1, "Q+", state.queueAddMode, "queue_add") end
+    if x + 6 <= x2 then x = drawButton(c, x, y + 1, "SET", state.settingsOpen, "settings") end
 end
 
 local function drawProgress(c, x1, y, x2)
@@ -2285,6 +2426,34 @@ local function drawVolume(c, x1, y, x2)
             c:cell(barX1 + i, y, " ", col, col)
         end
         addHitbox("volume", barX1, y, barX2, y, { x1 = barX1, x2 = barX2 })
+    end
+end
+
+local function drawSettingsPanel(c, x1, y1, x2, y2)
+    c:fill(x1, y1, x2, y2, colors.black)
+    c:center(y1, "SETTINGS", x1, x2, colors.yellow, colors.black)
+
+    local row = y1 + 2
+    local function option(label, value, id, active)
+        if row > y2 - 1 then return end
+        c:text(x1 + 3, row, label, colors.lightGray, colors.black)
+        local text = " " .. tostring(value) .. " "
+        local bx = math.max(x1 + 24, x2 - #text - 2)
+        c:text(bx, row, text, active == false and colors.lightGray or colors.black, active == false and colors.gray or colors.lightBlue)
+        addHitbox(id, x1 + 1, row, x2 - 1, row)
+        row = row + 2
+    end
+
+    option("VISUALIZER", CONFIG.vizMode:upper(), "viz_mode", true)
+    option("AUDIO ROUTING", CONFIG.audioMode:upper(), "audio_mode", true)
+    option("SHUFFLE", state.shuffle and "ON" or "OFF", "shuffle", state.shuffle)
+    option("LOOP", state.loopMode:upper(), "loop", state.loopMode ~= "off")
+    option("RESUME AFTER RESTART", CONFIG.resumeEnabled and "ON" or "OFF", "resume_toggle", CONFIG.resumeEnabled)
+    option("FAVORITES VIEW", state.favoritesOnly and "ON" or "OFF", "favorites_only", state.favoritesOnly)
+
+    if row <= y2 then
+        c:center(y2, "[ CLOSE SETTINGS ]", x1, x2, colors.white, colors.gray)
+        addHitbox("settings", x1, y2, x2, y2)
     end
 end
 
@@ -2350,10 +2519,16 @@ local function renderFrame()
     local progressY = controlsY - 1
     local lyricY = math.max(5, progressY - 2)
     local statusY = lyricY + 1
-    drawVisualizer(c, leftX1, 3, leftX2, math.max(5, lyricY - 1))
+    if state.settingsOpen then
+        drawSettingsPanel(c, leftX1, 3, leftX2, math.max(8, lyricY - 1))
+    else
+        drawVisualizer(c, leftX1, 3, leftX2, math.max(5, lyricY - 1))
+    end
 
-    if state.current then
+    if state.current and not state.settingsOpen then
         c:center(lyricY, lyricAt(currentPositionSeconds()), leftX1, leftX2, colors.lightGray, colors.black)
+    elseif state.settingsOpen then
+        c:center(lyricY, "Touch an option above", leftX1, leftX2, colors.gray, colors.black)
     elseif state.stopped then
         c:center(lyricY, "End of playlist", leftX1, leftX2, colors.lightGray, colors.black)
     else
@@ -2365,6 +2540,7 @@ local function renderFrame()
     if state.error then playbackStatus = "ERROR: " .. state.error; playbackColor = colors.red
     elseif state.loading then playbackStatus = "BUFFERING"; playbackColor = colors.yellow
     elseif state.paused then playbackStatus = "PAUSED"; playbackColor = colors.yellow
+    elseif state.queueAddMode then playbackStatus = "ADD NEXT: TAP A TRACK"; playbackColor = colors.orange
     elseif state.current then
         playbackStatus = "PLAYING | " .. state.sourceFormat .. " | " .. state.activeAudioMode
         if state.streamPartCount and state.streamPartCount > 1 and state.streamPart > 0 then
@@ -2440,9 +2616,19 @@ local function handleAction(id, data, touchX)
     elseif id == "loop" then cycleLoop()
     elseif id == "audio_mode" then cycleAudioMode()
     elseif id == "viz_mode" then cycleVizMode()
+    elseif id == "favorite" then toggleFavorite()
+    elseif id == "favorites_only" then toggleFavoritesOnly()
+    elseif id == "queue_add" then toggleQueueAddMode()
+    elseif id == "settings" then toggleSettings()
+    elseif id == "resume_toggle" then toggleResume()
     elseif id == "scroll_up" then scrollQueue(-1)
     elseif id == "scroll_down" then scrollQueue(1)
-    elseif id == "track" then requestTrack(data, true)
+    elseif id == "track" then
+        if state.queueAddMode then
+            if queueTrackNext(data) then state.queueAddMode = false end
+        else
+            requestTrack(data, true)
+        end
     elseif id == "seek" and type(data) == "table" then
         local width = math.max(1, data.x2 - data.x1)
         local ratio = clamp((touchX - data.x1) / width, 0, 1)
@@ -2472,6 +2658,10 @@ local function broadcastStatus(targetId)
         audio_mode = state.activeAudioMode,
         routing_mode = CONFIG.audioMode,
         viz_mode = CONFIG.vizMode,
+        queue_count = #state.manualQueue,
+        favorite = isFavorite(state.currentIndex),
+        favorites_count = favoriteCount(),
+        resume_enabled = CONFIG.resumeEnabled,
         source_rate = state.sourceRate,
         source_channels = state.sourceChannels,
         source_format = state.sourceFormat,
@@ -2501,6 +2691,9 @@ local function handleRemote(sender, msg)
     elseif op == "loop" then cycleLoop(); broadcastStatus(sender)
     elseif op == "audio_mode" then cycleAudioMode(); broadcastStatus(sender)
     elseif op == "viz_mode" then cycleVizMode(); broadcastStatus(sender)
+    elseif op == "favorite" then toggleFavorite(); broadcastStatus(sender)
+    elseif op == "favorites_only" then toggleFavoritesOnly(); broadcastStatus(sender)
+    elseif op == "resume_toggle" then toggleResume(); broadcastStatus(sender)
     elseif op == "seek_rel" then seekRelative(tonumber(msg.value) or 0); broadcastStatus(sender)
     elseif op == "seek" then requestSeek(tonumber(msg.value) or 0); broadcastStatus(sender)
     elseif op == "volume" then setVolume(tonumber(msg.value) or state.volume); broadcastStatus(sender)
@@ -2544,7 +2737,12 @@ local function eventLoop()
             elseif a == keys.v and not state.searchMode then cycleVizMode()
             elseif a == keys.j and not state.searchMode then seekRelative(-10)
             elseif a == keys.k and not state.searchMode then seekRelative(10)
+            elseif a == keys.b and not state.searchMode then toggleFavorite()
+            elseif a == keys.g and not state.searchMode then toggleFavoritesOnly()
+            elseif a == keys.n and not state.searchMode then toggleQueueAddMode()
+            elseif a == keys.m and not state.searchMode then toggleSettings()
             elseif a == keys.f and not state.searchMode then state.searchMode = true; state.search = ""; state.queueScroll = 0
+            elseif a == keys.escape and state.settingsOpen then state.settingsOpen = false
             elseif a == keys.escape and state.searchMode then state.searchMode = false; state.search = ""; state.queueScroll = 0
             elseif a == keys.enter and state.searchMode then
                 local results = filteredLibrary()
@@ -2580,6 +2778,7 @@ end
 
 local function heartbeatLoop()
     while state.running do
+        saveResume(false)
         if rednet and rednet.isOpen and rednet.isOpen() then broadcastStatus(nil) end
         local timer = os.startTimer(2)
         while state.running do
@@ -2598,6 +2797,7 @@ math.randomseed((os.epoch and os.epoch("utc") or os.clock() * 100000) + (os.getC
 
 local tracks, libraryErr, cached = loadLibrary()
 state.library = tracks
+state.favorites = loadFavorites()
 state.libraryCached = cached
 state.warning = libraryErr
 state.loading = false
@@ -2606,7 +2806,24 @@ if #tracks == 0 then
     state.error = libraryErr or "No .sqsh tracks found"
 else
     rebuildOrder(false)
-    local start = preferredStartIndex()
+
+    local start = nil
+    local resumePosition = 0
+    if CONFIG.resumeEnabled then
+        local resumeName = tostring(getSetting("ccmusic.resume_track", "") or "")
+        resumePosition = tonumber(getSetting("ccmusic.resume_position", 0)) or 0
+        if resumeName ~= "" then
+            for i = 1, #state.library do
+                if state.library[i].name == resumeName then start = i; break end
+            end
+        end
+    end
+
+    if not start then
+        start = preferredStartIndex()
+        resumePosition = 0
+    end
+
     if start then
         if state.shuffle then
             local p = findOrderPos(start)
@@ -2616,6 +2833,10 @@ else
             state.orderPos = findOrderPos(start) or 1
         end
         requestTrack(start, false)
+        if CONFIG.resumeEnabled and resumePosition > 1 then
+            state.requestedSeek = math.min(resumePosition, math.max(0, (state.library[start].duration or 0) - 0.25))
+            state.playedSamples = math.floor((state.requestedSeek or 0) * 48000 + 0.5)
+        end
     end
 end
 
@@ -2623,6 +2844,7 @@ local ok, err = pcall(function()
     parallel.waitForAll(audioLoop, eventLoop, renderLoop, heartbeatLoop)
 end)
 
+saveResume(true)
 state.running = false
 _G.__ccmusic_running = false
 stopSpeakers()
