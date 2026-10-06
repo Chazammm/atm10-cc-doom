@@ -1,8 +1,8 @@
 -- CC-Music Player for CC:Tweaked / ATM10 8.2
--- Designed for large Advanced Monitor walls and SQSH1 (DFPWM) audio files.
+-- Designed for large Advanced Monitor walls and SQSH1/SQSH2 (DFPWM) audio files.
 -- Repository default: https://github.com/Di33le/CC-Music
 
-local VERSION = "2.2.0"
+local VERSION = "3.0.0"
 local PROTOCOL = "ccmusic.v2"
 local INDEX_CACHE = "/.ccmusic-index.json"
 
@@ -35,6 +35,12 @@ defineSetting("ccmusic.chunk_bytes", 0, "number", "DFPWM bytes per chunk; 0 = au
 defineSetting("ccmusic.hq_resampler", true, "boolean", "Use higher-quality 24 kHz -> 48 kHz interpolation")
 defineSetting("ccmusic.ui_fps", 6, "number", "Maximum UI refresh rate")
 defineSetting("ccmusic.start_track", "Sundress", "string", "Preferred title substring to play first")
+defineSetting("ccmusic.audio_mode", "auto", "string", "Audio routing: auto, stereo, or mono")
+defineSetting("ccmusic.left_speaker", "", "string", "Peripheral name for the left stereo speaker")
+defineSetting("ccmusic.right_speaker", "", "string", "Peripheral name for the right stereo speaker")
+defineSetting("ccmusic.balance", 0.0, "number", "Stereo balance from -1.0 (left) to +1.0 (right)")
+defineSetting("ccmusic.passthrough_48k", true, "boolean", "Preserve native 48 kHz DFPWM bitstream when possible")
+defineSetting("ccmusic.stereo_chunk_bytes", 8192, "number", "SQSH2 DFPWM bytes per channel block")
 
 if settings and settings.load then pcall(settings.load) end
 
@@ -54,11 +60,20 @@ local CONFIG = {
     hqResampler = getSetting("ccmusic.hq_resampler", true) ~= false,
     uiFps = tonumber(getSetting("ccmusic.ui_fps", 6)) or 6,
     startTrack = tostring(getSetting("ccmusic.start_track", "Sundress")),
+    audioMode = tostring(getSetting("ccmusic.audio_mode", "auto")):lower(),
+    leftSpeaker = tostring(getSetting("ccmusic.left_speaker", "")),
+    rightSpeaker = tostring(getSetting("ccmusic.right_speaker", "")),
+    balance = tonumber(getSetting("ccmusic.balance", 0.0)) or 0.0,
+    passthrough48k = getSetting("ccmusic.passthrough_48k", true) ~= false,
+    stereoChunkBytes = math.floor(tonumber(getSetting("ccmusic.stereo_chunk_bytes", 8192)) or 8192),
 }
 if CONFIG.chunkBytes ~= 0 then CONFIG.chunkBytes = math.max(256, math.min(16384, CONFIG.chunkBytes)) end
 CONFIG.uiFps = math.max(2, math.min(12, CONFIG.uiFps))
 if CONFIG.textScale < 0.5 then CONFIG.textScale = 0.5 end
 if CONFIG.textScale > 5 then CONFIG.textScale = 5 end
+if CONFIG.audioMode ~= "auto" and CONFIG.audioMode ~= "stereo" and CONFIG.audioMode ~= "mono" then CONFIG.audioMode = "auto" end
+CONFIG.balance = math.max(-1, math.min(1, CONFIG.balance))
+CONFIG.stereoChunkBytes = math.max(1024, math.min(16384, CONFIG.stereoChunkBytes))
 
 local function clamp(v, lo, hi)
     if v < lo then return lo end
@@ -303,6 +318,15 @@ local state = {
     lastRemoteStatus = 0,
     lastUiError = nil,
     libraryCached = false,
+    leftSpeakerName = nil,
+    rightSpeakerName = nil,
+    leftSpeaker = nil,
+    rightSpeaker = nil,
+    sourceChannels = 1,
+    sourceRate = 0,
+    sourceFormat = "SQSH1",
+    activeAudioMode = "MONO",
+    audioPassthrough = false,
 }
 
 if state.loopMode ~= "all" and state.loopMode ~= "one" and state.loopMode ~= "off" then
@@ -343,6 +367,19 @@ local function refreshPeripherals()
     table.sort(speakers, function(a, b) return a.name < b.name end)
     state.speakers = speakers
     state.speakerMap = speakerMap
+
+    -- Reuse the video player's stereo mapping when CC-Music has not been
+    -- configured separately. This makes the existing LEFT/RIGHT setup work
+    -- immediately for both projects.
+    local leftName = CONFIG.leftSpeaker
+    local rightName = CONFIG.rightSpeaker
+    if leftName == "" then leftName = tostring(getSetting("musicvideo.left_speaker", "") or "") end
+    if rightName == "" then rightName = tostring(getSetting("musicvideo.right_speaker", "") or "") end
+    state.leftSpeakerName = leftName ~= "" and leftName or nil
+    state.rightSpeakerName = rightName ~= "" and rightName or nil
+    state.leftSpeaker = state.leftSpeakerName and speakerMap[state.leftSpeakerName] or nil
+    state.rightSpeaker = state.rightSpeakerName and speakerMap[state.rightSpeakerName] or nil
+
     state.monitor = monitor
     state.monitorName = monitorName
 
