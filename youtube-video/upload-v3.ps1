@@ -126,19 +126,42 @@ try {
         )) -ne 0) { throw "Could not create GitHub release." }
     }
 
-    Write-Host ""
-    Write-Host "Uploading automatically in batches of five." -ForegroundColor Cyan
-    Write-Host "Safe to rerun after an interruption; matching assets are replaced."
+    # Read existing release assets. Exact name+size matches are already done,
+    # so a rerun after closing PowerShell does not upload hundreds of MB again.
+    $existing = @{}
+    $oldPreference = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    try {
+        $assetLines = @(& $gh api "repos/$Repo/releases/tags/$Tag" --jq '.assets[] | [.name, (.size|tostring)] | @tsv' 2>$null)
+        if ($LASTEXITCODE -eq 0) {
+            foreach ($line in $assetLines) {
+                $cols = "$line".Split([char]9)
+                if ($cols.Count -eq 2) { $existing[$cols[0]] = [int64]$cols[1] }
+            }
+        }
+    } finally { $ErrorActionPreference = $oldPreference }
 
-    for ($start=0; $start -lt $files.Count; $start+=5) {
-        $end=[Math]::Min($start+4,$files.Count-1)
-        $batch=@($files[$start..$end])
-        Write-Host ("Uploading parts {0:D2}-{1:D2}..." -f ($start+1),($end+1))
+    $pending = @()
+    foreach ($file in $files) {
+        if ($existing.ContainsKey($file.Name) -and $existing[$file.Name] -eq $file.Length) {
+            Write-Host ("Already complete: " + $file.Name) -ForegroundColor DarkGray
+        } else {
+            $pending += $file
+        }
+    }
+
+    Write-Host ""
+    Write-Host ("Uploading {0} remaining part(s) in batches of five." -f $pending.Count) -ForegroundColor Cyan
+
+    for ($start=0; $start -lt $pending.Count; $start+=5) {
+        $end=[Math]::Min($start+4,$pending.Count-1)
+        $batch=@($pending[$start..$end])
+        Write-Host ("Uploading batch {0}-{1} of {2}..." -f ($start+1),($end+1),$pending.Count)
         $arguments=@("release","upload",$Tag)
         foreach ($file in $batch) { $arguments += $file.FullName }
         $arguments += @("--repo",$Repo,"--clobber")
         if ((Run-Gh $gh $arguments) -ne 0) {
-            throw "Upload failed. Run this script again; --clobber makes reruns safe."
+            throw "Upload failed. Run this script again; already-complete assets will be skipped."
         }
     }
 
