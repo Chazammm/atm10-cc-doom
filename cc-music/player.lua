@@ -2,7 +2,7 @@
 -- Designed for large Advanced Monitor walls and SQSH1/SQSH2 (DFPWM) audio files.
 -- Repository default: https://github.com/Di33le/CC-Music
 
-local VERSION = "3.6.0"
+local VERSION = "3.6.1"
 local PROTOCOL = "ccmusic.v2"
 local INDEX_CACHE = "/.ccmusic-index.json"
 
@@ -2401,33 +2401,74 @@ local function drawVisualizer(c, x1, y1, x2, y2)
     end
 
     if CONFIG.vizMode == "orbit" then
-        -- Radial spectrum around a bass-reactive core.
-        local maxR = math.max(5, math.min(math.floor((x2 - x1) * 0.23), math.floor((y2 - y1) * 0.42)))
-        local core = math.max(2, math.floor(maxR * 0.48))
-        local pulse = clamp((state.vizBass or 0) * 1.45 + (state.rms or 0) * 0.35, 0, 1)
-        core = core + math.floor(pulse * 2 + 0.5)
+        -- Aggressive radial spectrum. Keep the core smaller so the bands have
+        -- much more travel, then apply a perceptual expansion to make kicks and
+        -- mids punch outward instead of hovering close to the center.
+        local maxR = math.max(6, math.min(math.floor((x2 - x1) * 0.27), math.floor((y2 - y1) * 0.46)))
+        local pulse = clamp((state.vizBass or 0) * 1.85 + (state.rms or 0) * 0.55, 0, 1)
+        local core = math.max(2, math.floor(maxR * 0.30) + math.floor(pulse * 1.2 + 0.5))
+        local travel = math.max(3, maxR - core)
 
-        for deg = 0, 350, 10 do
+        -- Main bass-reactive core.
+        for deg = 0, 352, 8 do
             local a = deg * math.pi / 180
             local x = math.floor(cx + math.cos(a) * core + 0.5)
             local y = math.floor(cy + math.sin(a) * core + 0.5)
-            c:cell(x, y, ".", colors.white, colors.black)
+            c:cell(x, y, ".", pulse > 0.60 and colors.yellow or colors.white, colors.black)
         end
 
+        -- A transient shockwave appears on stronger beats.
+        if pulse > 0.38 then
+            local shockR = math.min(maxR, core + 1 + math.floor((pulse - 0.38) / 0.62 * travel * 0.62 + 0.5))
+            for deg = 0, 345, 15 do
+                local a = deg * math.pi / 180
+                local x = math.floor(cx + math.cos(a) * shockR + 0.5)
+                local y = math.floor(cy + math.sin(a) * shockR + 0.5)
+                c:cell(x, y, ".", colors.lightGray, colors.black)
+            end
+        end
+
+        -- Slow rotation keeps the shape alive, while amplitude still comes
+        -- entirely from the music.
+        local rotation = ((nowMs() / 1000) * 0.22) % (math.pi * 2)
+
         for b = 1, bands do
-            local a = ((b - 1) / bands) * math.pi * 2 - math.pi / 2
+            local a = ((b - 1) / bands) * math.pi * 2 - math.pi / 2 + rotation
             local v = clamp(state.bands[b] or 0, 0, 1)
-            local length = 1 + math.floor(v * math.max(2, maxR - core) + 0.5)
+            local peak = clamp(state.bandPeaks[b] or 0, 0, 1)
+
+            -- Expand the lower half of the range heavily: 0.25 now already
+            -- looks energetic, while real peaks still reach the outer edge.
+            local boosted = clamp(math.pow(math.max(v, peak * 0.82), 0.52) * 1.32, 0, 1)
+            local length = math.max(1, math.floor(boosted * travel + 0.5))
             local col = RAINBOW[b] or colors.white
+
             for step = 0, length do
                 local r = core + step
                 local x = math.floor(cx + math.cos(a) * r + 0.5)
                 local y = math.floor(cy + math.sin(a) * r + 0.5)
                 c:cell(x, y, " ", col, col)
+
+                -- High-energy bands get a little width at the outer half,
+                -- making strong hits feel much more substantial.
+                if boosted > 0.72 and step > length * 0.45 then
+                    local spread = 0.045
+                    local x2a = math.floor(cx + math.cos(a + spread) * r + 0.5)
+                    local y2a = math.floor(cy + math.sin(a + spread) * r + 0.5)
+                    c:cell(x2a, y2a, " ", col, col)
+                end
+            end
+
+            -- Bright tip marker on strong transient peaks.
+            if boosted > 0.48 then
+                local tipR = math.min(maxR, core + length + 1)
+                local tx = math.floor(cx + math.cos(a) * tipR + 0.5)
+                local ty = math.floor(cy + math.sin(a) * tipR + 0.5)
+                c:cell(tx, ty, ".", colors.white, colors.black)
             end
         end
 
-        c:center(cy, "ORBIT", cx - 4, cx + 4, colors.white, colors.black)
+        c:center(cy, "ORBIT", cx - 4, cx + 4, pulse > 0.70 and colors.yellow or colors.white, colors.black)
         return
     end
 
