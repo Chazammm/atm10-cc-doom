@@ -68,21 +68,39 @@ local function draw()
         if rate > 0 then audio = audio .. " " .. tostring(math.floor(rate / 1000 + 0.5)) .. "k" end
         if status.passthrough then audio = audio .. " DIRECT" end
         term.write(audio:sub(1, math.max(1, w - 2)))
-        if status.error then term.setCursorPos(2, 10); term.setTextColor(colors.red); term.write(tostring(status.error):sub(1, w - 2)) end
+        if h >= 10 then
+            term.setCursorPos(2, 9)
+            term.setTextColor(colors.gray)
+            term.write(("VIZ " .. tostring(status.viz_mode or "classic"):upper()):sub(1, math.max(1, w - 2)))
+        end
+        if status.error and h >= 10 then
+            term.setCursorPos(2, 10)
+            term.setTextColor(colors.red)
+            term.write(tostring(status.error):sub(1, w - 2))
+        end
     else
         term.setCursorPos(2, 3); term.setTextColor(colors.orange); term.write("Searching for player...")
     end
 
-    local y = math.max(11, h - 6)
+    local help = {
+        "SPACE  Play/Pause",
+        "LEFT   Previous",
+        "RIGHT  Next",
+        "UP/DN  Volume",
+        "S/L    Shuffle/Loop",
+        "A      Audio mode",
+        "V      Visualizer",
+        "Q      Quit",
+    }
+    local y = math.max(11, h - #help + 1)
     term.setTextColor(colors.white)
-    term.setCursorPos(2, y); term.write("SPACE  Play/Pause")
-    term.setCursorPos(2, y + 1); term.write("LEFT   Previous")
-    term.setCursorPos(2, y + 2); term.write("RIGHT  Next")
-    term.setCursorPos(2, y + 3); term.write("UP/DN  Volume")
-    term.setCursorPos(2, y + 4); term.write("S/L    Shuffle/Loop")
-    term.setCursorPos(2, y + 5); term.write("A      Audio mode")
-    term.setCursorPos(2, y + 6); term.write("V      Visualizer")
-    term.setCursorPos(2, y + 7); term.write("Q      Quit")
+    for i = 1, #help do
+        local row = y + i - 1
+        if row <= h then
+            term.setCursorPos(2, row)
+            term.write(help[i]:sub(1, math.max(1, w - 2)))
+        end
+    end
 end
 
 discover()
