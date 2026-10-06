@@ -9,12 +9,40 @@ local function log2(n) local _, r = math_frexp(n) return r - 1 end
 local path, endMode = ...
 if not path then error("Usage: 32vid-player-fast <file-or-url> [keep]") end
 
+local function wrapSpeaker(name)
+    if type(name) ~= "string" then return nil end
+    local ok, wrapped = pcall(peripheral.wrap, name)
+    if not ok or not wrapped then return nil end
+    local types = { peripheral.getType(name) }
+    for _, t in ipairs(types) do
+        if t == "speaker" then return wrapped end
+    end
+    return nil
+end
+
 local speaker = peripheral.find("speaker")
 local speakerName = speaker and peripheral.getName(speaker) or nil
+
+-- V3 can contain optional stereo audio chunks:
+--   type 1 = mono fallback
+--   type 2 = left channel
+--   type 3 = right channel
+-- Stereo is enabled only after running /stereosetup.lua, so old media and
+-- installations with one speaker keep behaving exactly as before.
+local leftName = settings.get("musicvideo.left_speaker")
+local rightName = settings.get("musicvideo.right_speaker")
+local leftSpeaker = wrapSpeaker(leftName)
+local rightSpeaker = wrapSpeaker(rightName)
+local stereoActive = leftSpeaker and rightSpeaker and leftName ~= rightName
+
 local dfpwm = require("cc.audio.dfpwm")
 local normalDecoder = dfpwm.make_decoder()
+local leftNormalDecoder = dfpwm.make_decoder()
+local rightNormalDecoder = dfpwm.make_decoder()
 local audioMode = settings.get("musicvideo.audio_mode") or "passthrough"
 local volume = tonumber(settings.get("musicvideo.volume")) or 1.0
+local leftVolume = tonumber(settings.get("musicvideo.left_volume")) or volume
+local rightVolume = tonumber(settings.get("musicvideo.right_volume")) or volume
 local dropLate = settings.get("musicvideo.drop_late_frames")
 if dropLate == nil then dropLate = true end
 local dropFactor = tonumber(settings.get("musicvideo.drop_factor")) or 1.0
@@ -114,13 +142,23 @@ local function pcmDecode(data)
     return audioBuffer
 end
 
-local function playSamples(samples)
-    if not speaker or not samples or #samples == 0 then return end
-    while not speaker.playAudio(samples, volume) do
+local function playSamplesOn(target, targetName, samples, targetVolume)
+    if not target or not samples or #samples == 0 then return end
+    while not target.playAudio(samples, targetVolume) do
         stats.backpressure = stats.backpressure + 1
         repeat
             local _, name = os.pullEvent("speaker_audio_empty")
-        until not speakerName or name == speakerName
+        until not targetName or name == targetName
+    end
+end
+
+local function decodeAudio(audio, decoder)
+    if bit_band(flags, 12) == 0 then
+        return pcmDecode(audio)
+    elseif audioMode == "passthrough" then
+        return passthroughDecode(audio)
+    else
+        return decoder(audio)
     end
 end
 
@@ -303,17 +341,36 @@ for _ = 1, nframes do
     local size, frameType = ("<IB"):unpack(header)
 
     if frameType == 1 then
+        -- Standard mono audio. V3 keeps this as a fallback when stereo has not
+        -- been configured, so the file still works with one ordinary speaker.
         local audio = file.read(size)
-        if speaker and not muteAudio then
-            local samples
-            if bit_band(flags, 12) == 0 then
-                samples = pcmDecode(audio)
-            elseif audioMode == "passthrough" then
-                samples = passthroughDecode(audio)
-            else
-                samples = normalDecoder(audio)
+        if speaker and not muteAudio and not stereoActive then
+            local samples = decodeAudio(audio, normalDecoder)
+            playSamplesOn(speaker, speakerName, samples, volume)
+            if not mediaStart then
+                mediaStart = os.epoch("utc")
+                if sessionActive then settings.set("musicvideo.session_start", mediaStart) end
             end
-            playSamples(samples)
+        end
+
+    elseif frameType == 2 then
+        -- V3 left-channel DFPWM chunk.
+        local audio = file.read(size)
+        if stereoActive and not muteAudio then
+            local samples = decodeAudio(audio, leftNormalDecoder)
+            playSamplesOn(leftSpeaker, leftName, samples, leftVolume)
+            if not mediaStart then
+                mediaStart = os.epoch("utc")
+                if sessionActive then settings.set("musicvideo.session_start", mediaStart) end
+            end
+        end
+
+    elseif frameType == 3 then
+        -- V3 right-channel DFPWM chunk.
+        local audio = file.read(size)
+        if stereoActive and not muteAudio then
+            local samples = decodeAudio(audio, rightNormalDecoder)
+            playSamplesOn(rightSpeaker, rightName, samples, rightVolume)
             if not mediaStart then
                 mediaStart = os.epoch("utc")
                 if sessionActive then settings.set("musicvideo.session_start", mediaStart) end
