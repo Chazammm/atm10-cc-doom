@@ -1,4 +1,4 @@
-# CC-Music 3.4 for ATM10 8.2 / CC:Tweaked
+# CC-Music 3.5 for ATM10 8.2 / CC:Tweaked
 
 A large-monitor music player for CC:Tweaked, built around the `Di33le/CC-Music` library and extended with true stereo support.
 
@@ -89,7 +89,7 @@ Legacy format:
 
 ### SQSH2
 
-CC-Music 3.4 stereo format:
+CC-Music 3.5 stereo format:
 
 - two independent DFPWM channels;
 - 48 kHz;
@@ -285,3 +285,16 @@ The 8x5 monitor UI now behaves more like a real media player:
 - Rednet remote also supports `J/K` seeking.
 
 SQSH2 seeking is aligned to a valid interleaved audio-block boundary so LEFT/RIGHT stay synchronized. Long segmented albums continue to behave as one logical track.
+
+
+## Library UX and persistence in 3.5
+
+- Resume after restart is enabled by default. CC-Music stores the logical track and playback position about every five seconds and resumes from that point on the next launch.
+- The `FAV` button toggles the current track as a favorite. Favorite tracks are marked with `*` in the queue.
+- `FAVS` toggles a favorites-only library view. Favorites are stored locally in `/ccmusic/favorites.json`.
+- `Q+` arms one-shot "Play next" mode. Tap any track in the right-hand list and it is inserted ahead of the normal shuffle/order sequence. Queued entries are shown in orange with a `Q` marker.
+- `SET` opens an on-screen settings panel with visualizer, audio routing, shuffle, loop, restart-resume and favorites-view controls.
+- Keyboard shortcuts: `B` favorite current track, `G` favorites view, `N` arm Play Next, `M` settings, `Esc` closes settings.
+- The Rednet remote shows favorite/manual-queue status and `B` toggles the current favorite.
+
+Resume, favorites and the manual queue are player-side features and do not change the SQSH2 48 kHz DIRECT audio path.
