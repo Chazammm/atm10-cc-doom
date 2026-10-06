@@ -489,6 +489,10 @@ end
 
 local function drawFrame(screen, fg, bg, palette)
     local r0 = os.epoch("utc")
+    if forceRedraw then
+        previousText, previousFg, previousBg = {}, {}, {}
+        forceRedraw = false
+    end
 
     -- Palette changes recolour already-present monitor cells, so unchanged rows
     -- do not need to be re-blitted just because RGB palette values changed.
@@ -496,6 +500,7 @@ local function drawFrame(screen, fg, bg, palette)
     -- padding cells. A terminal "black" cell is only an index: if that palette
     -- index is later changed to grey, untouched padding turns grey too.
     local darkestIndex, darkestValue = 0, math.huge
+    local lightestIndex, lightestValue = 15, -1
     for i = 0, 15 do
         local p = palette[i]
         local old = previousPalette[i]
@@ -509,7 +514,12 @@ local function drawFrame(screen, fg, bg, palette)
             darkestValue = luma
             darkestIndex = i
         end
+        if luma > lightestValue then
+            lightestValue = luma
+            lightestIndex = i
+        end
     end
+    osdDark, osdLight = darkestIndex, lightestIndex
 
     -- Repaint all out-of-video cells after the palette update. This fixes the
     -- grey/right strip seen when old 143x81 media is shown on the 164x67 wall.
@@ -563,13 +573,15 @@ local function drawFrame(screen, fg, bg, palette)
         end
     end
 
+    if osdVisible or paused then drawOSD() end
     stats.renderMs = stats.renderMs + (os.epoch("utc") - r0)
 end
 
-term.setBackgroundColor(colors.black)
-term.clear()
+if endMode ~= "keep" then
+    term.setBackgroundColor(colors.black)
+    term.clear()
+end
 
-local mediaStart = sessionStart
 local videoFrame = 0
 local subtitles = {}
 local pendingLeft, pendingRight
