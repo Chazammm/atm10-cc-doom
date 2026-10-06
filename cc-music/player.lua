@@ -33,7 +33,7 @@ defineSetting("ccmusic.loop", "all", "string", "Loop mode: all, one, off")
 defineSetting("ccmusic.text_scale", 0.5, "number", "Advanced Monitor text scale")
 defineSetting("ccmusic.chunk_bytes", 0, "number", "DFPWM bytes per chunk; 0 = automatic maximum safe size")
 defineSetting("ccmusic.hq_resampler", true, "boolean", "Use higher-quality 24 kHz -> 48 kHz interpolation")
-defineSetting("ccmusic.ui_fps", 6, "number", "Maximum UI refresh rate")
+defineSetting("ccmusic.ui_fps", 8, "number", "Maximum UI refresh rate")
 defineSetting("ccmusic.start_track", "Sundress", "string", "Preferred title substring to play first")
 defineSetting("ccmusic.audio_mode", "auto", "string", "Audio routing: auto, stereo, or mono")
 defineSetting("ccmusic.left_speaker", "", "string", "Peripheral name for the left stereo speaker")
@@ -58,7 +58,7 @@ local CONFIG = {
     textScale = tonumber(getSetting("ccmusic.text_scale", 0.5)) or 0.5,
     chunkBytes = math.floor(tonumber(getSetting("ccmusic.chunk_bytes", 0)) or 0),
     hqResampler = getSetting("ccmusic.hq_resampler", true) ~= false,
-    uiFps = tonumber(getSetting("ccmusic.ui_fps", 6)) or 6,
+    uiFps = tonumber(getSetting("ccmusic.ui_fps", 8)) or 8,
     startTrack = tostring(getSetting("ccmusic.start_track", "Sundress")),
     audioMode = tostring(getSetting("ccmusic.audio_mode", "auto")):lower(),
     leftSpeaker = tostring(getSetting("ccmusic.left_speaker", "")),
