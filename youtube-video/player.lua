@@ -27,8 +27,15 @@ local ok, err = xpcall(function()
   term.redirect(monitor)
   monitor.setBackgroundColor(colors.black)
   monitor.setTextColor(colors.white)
-  monitor.clear()
-  monitor.setCursorPos(1, 1)
+
+  -- Playlist parts use endMode="keep". Only clear before the first part:
+  -- clearing every new HTTP segment caused a visible black flash even though
+  -- the fast player itself preserved the previous frame.
+  local sessionFrame = tonumber(settings.get("musicvideo.session_frame")) or 0
+  if endMode ~= "keep" or sessionFrame == 0 then
+    monitor.clear()
+    monitor.setCursorPos(1, 1)
+  end
 
   local ran = shell.run("/video-lib/32vid-player-fast.lua", source, endMode or "")
   if not ran then
