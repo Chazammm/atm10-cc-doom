@@ -180,21 +180,159 @@ local monoPassthrough, leftPassthrough, rightPassthrough =
     makePassthroughDecoder(), makePassthroughDecoder(), makePassthroughDecoder()
 local monoPCM, leftPCM, rightPCM = makePCMDecoder(), makePCMDecoder(), makePCMDecoder()
 
-local function playSamplesOn(target, targetName, samples, targetVolume)
-    if not target or not samples or #samples == 0 then return end
-    while not target.playAudio(samples, targetVolume) do
+local mediaStart = sessionStart
+local currentGlobalFrame = frameOffset + skipFrames
+local controlAction, controlTarget
+local paused, pauseStarted = false, nil
+local osdVisible, osdUntil = false, 0
+local osdDark, osdLight = 0, 15
+local forceRedraw = false
+
+local function stopSpeakers()
+    local seen = {}
+    local function stopOne(s, name)
+        local key = name or tostring(s)
+        if s and not seen[key] then
+            seen[key] = true
+            pcall(s.stop)
+        end
+    end
+    stopOne(speaker, speakerName)
+    stopOne(leftSpeaker, leftName)
+    stopOne(rightSpeaker, rightName)
+end
+
+local function formatTime(frame)
+    local seconds = math.max(0, math.floor((frame or 0) / fps + 0.5))
+    return ("%02d:%02d"):format(math.floor(seconds / 60), seconds % 60)
+end
+
+local function fitLine(s)
+    if #s > tw then return s:sub(1, tw) end
+    return s .. string.rep(" ", tw - #s)
+end
+
+local function drawOSD()
+    if not osdVisible and not paused then return end
+    local total = totalFrames or math.max(currentGlobalFrame + 1, 1)
+    local ratio = math.max(0, math.min(1, currentGlobalFrame / math.max(1, total - 1)))
+    local barWidth = math.max(10, tw - 73)
+    local filled = math.floor(barWidth * ratio + 0.5)
+    local bar = string.rep("=", filled) .. string.rep("-", barWidth - filled)
+    local mode = stereoActive and hasStereoAudio and "ST" or "MO"
+    local line1 = fitLine(("%s/%s [%s] %s %3d%% drop:%d adapt:%d"):format(
+        formatTime(currentGlobalFrame), formatTime(total), bar, mode,
+        math.floor(volume * 100 + 0.5), stats.dropped, stats.adaptiveSkipped))
+    local playLabel = paused and "PLAY" or "PAUSE"
+    local line2 = fitLine(("[ <10s ]          [ %-5s ]          [ +10s ]          [ VOL- ]          [ VOL+ ]          [ INFO ]          [ STOP ]"):format(playLabel))
+    local fg, bg = blitColors[osdLight], blitColors[osdDark]
+    term.setCursorPos(1, math.max(1, th - 1))
+    term.blit(line1, string.rep(fg, tw), string.rep(bg, tw))
+    term.setCursorPos(1, th)
+    term.blit(line2, string.rep(fg, tw), string.rep(bg, tw))
+end
+
+local function showOSD()
+    osdVisible = true
+    osdUntil = os.epoch("utc") + 5000
+    drawOSD()
+end
+
+local function hideOSD()
+    if osdVisible and not paused then
+        osdVisible = false
+        forceRedraw = true
+    end
+end
+
+local function requestSeek(deltaFrames)
+    local target = math.max(0, currentGlobalFrame + deltaFrames)
+    if totalFrames then target = math.min(totalFrames - 1, target) end
+    controlAction, controlTarget = "seek", target
+    stopSpeakers()
+end
+
+local function togglePause()
+    local now = os.epoch("utc")
+    if paused then
+        paused = false
+        if pauseStarted and mediaStart then
+            mediaStart = mediaStart + now - pauseStarted
+            if sessionActive then settings.set("musicvideo.session_start", mediaStart) end
+        end
+        pauseStarted = nil
+        osdUntil = now + 5000
+        forceRedraw = true
+    else
+        paused = true
+        pauseStarted = now
+        stopSpeakers()
+        osdVisible = true
+        drawOSD()
+    end
+end
+
+local function handleTouch(_, x, y)
+    if not x or not y then return end
+    if not osdVisible and not paused then showOSD() return end
+    osdUntil = os.epoch("utc") + 5000
+    if y < th then
+        if not paused then hideOSD() end
+        return
+    end
+    local section = math.floor((x - 1) * 7 / math.max(1, tw)) + 1
+    if section == 1 then requestSeek(-10 * fps)
+    elseif section == 2 then togglePause()
+    elseif section == 3 then requestSeek(10 * fps)
+    elseif section == 4 then
+        volume = math.max(0, volume - 0.1)
+        leftVolume, rightVolume = volume, volume
+        settings.set("musicvideo.volume", volume)
+        showOSD()
+    elseif section == 5 then
+        volume = math.min(3, volume + 0.1)
+        leftVolume, rightVolume = volume, volume
+        settings.set("musicvideo.volume", volume)
+        showOSD()
+    elseif section == 6 then
+        showStats = not showStats
+        showOSD()
+    else
+        controlAction = "stop"
+        stopSpeakers()
+    end
+end
+
+local function waitPaused()
+    while paused and not controlAction do
+        drawOSD()
+        local ev, a, b, d = os.pullEvent()
+        if ev == "monitor_touch" then handleTouch(a, b, d) end
+    end
+end
+
+local function playSamplesOn(target, targetName, samples, targetVolume, allowControls)
+    if not target or not samples or #samples == 0 or muteAudio then return end
+    while not controlAction and not target.playAudio(samples, targetVolume) do
         stats.backpressure = stats.backpressure + 1
-        repeat
-            local _, name = os.pullEvent("speaker_audio_empty")
-        until not targetName or name == targetName
+        local ready = false
+        while not ready and not controlAction do
+            local ev, a, b, d = os.pullEvent()
+            if ev == "speaker_audio_empty" and (not targetName or a == targetName) then
+                ready = true
+            elseif ev == "monitor_touch" and allowControls then
+                handleTouch(a, b, d)
+            end
+            if paused then waitPaused() end
+        end
     end
 end
 
 local function playStereo(leftSamples, rightSamples)
     if not stereoActive or muteAudio then return end
     parallel.waitForAll(
-        function() playSamplesOn(leftSpeaker, leftName, leftSamples, leftVolume) end,
-        function() playSamplesOn(rightSpeaker, rightName, rightSamples, rightVolume) end
+        function() playSamplesOn(leftSpeaker, leftName, leftSamples, leftVolume, true) end,
+        function() playSamplesOn(rightSpeaker, rightName, rightSamples, rightVolume, false) end
     )
 end
 
@@ -208,14 +346,27 @@ local function decodeAudio(audio, decoder, passthrough, pcm)
     end
 end
 
-local function waitUntil(deadline)
-    local remaining = deadline - os.epoch("utc")
-    if remaining <= 0 then return end
-    local timer = os.startTimer(remaining / 1000)
-    while true do
-        local event, id = os.pullEvent()
-        if event == "timer" and id == timer then return end
+local function waitUntilFrame(globalFrame)
+    while not controlAction do
+        if paused then waitPaused() end
+        if controlAction then return false end
+        local deadline = (mediaStart or os.epoch("utc")) + globalFrame * frameMs
+        local now = os.epoch("utc")
+        if osdVisible and not paused and now >= osdUntil then hideOSD() end
+        local remaining = deadline - now
+        if remaining <= 0 then return true end
+        local wake = remaining
+        if osdVisible and not paused then wake = math.min(wake, math.max(1, osdUntil - now)) end
+        local timer = os.startTimer(wake / 1000)
+        while true do
+            local ev, a, b, d = os.pullEvent()
+            if ev == "timer" and a == timer then break
+            elseif ev == "monitor_touch" then handleTouch(a, b, d) end
+            if controlAction then return false end
+            if paused then break end
+        end
     end
+    return false
 end
 
 local function byteReader(data)
