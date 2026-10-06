@@ -25,13 +25,32 @@ end
 local body = response.readAll()
 response.close()
 local ok, release = pcall(textutils.unserializeJSON, body)
-if not ok or type(release) ~= "table" or type(release.assets) ~= "table" then
+if not ok or type(release) ~= "table" or type(release.id) ~= "number" then
   printError("Could not read the Agartha V3 GitHub release.")
   return
 end
 
+-- The release object may not inline every asset when there are many parts.
+-- Query the assets endpoint explicitly with per_page=100.
+local assetsUrl = ("https://api.github.com/repos/Chazammm/atm10-cc-doom/releases/%d/assets?per_page=100"):format(release.id)
+local ah, aerr = http.get(assetsUrl, {
+  ["Accept"] = "application/vnd.github+json",
+  ["X-GitHub-Api-Version"] = "2022-11-28",
+})
+if not ah then
+  printError("Could not list Agartha V3 release assets: " .. tostring(aerr))
+  return
+end
+local abody = ah.readAll()
+ah.close()
+local aok, assets = pcall(textutils.unserializeJSON, abody)
+if not aok or type(assets) ~= "table" then
+  printError("Could not parse Agartha V3 release assets.")
+  return
+end
+
 local present, count, maxPart = {}, 0, 0
-for _, asset in ipairs(release.assets) do
+for _, asset in ipairs(assets) do
   if asset.state == "uploaded" and type(asset.name) == "string" then
     local n = tonumber(asset.name:match("^agartha%-v3%-part(%d+)%.32vid$"))
     if n then
