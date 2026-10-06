@@ -88,3 +88,42 @@ powershell -ExecutionPolicy Bypass -File .\upload-v3.ps1 -Source "C:\path\to\V3"
 ```
 
 The uploader verifies all 86 parts, creates the release when necessary, and uploads in batches. It can safely be rerun after interruption.
+
+
+## V3.1 runtime upgrades
+
+The V3 player now keeps the same vanilla ATM10/CC:Tweaked media but adds:
+
+- paired left/right speaker submission instead of serial stereo playback;
+- independent audio buffers per channel;
+- asynchronous HTTP prefetch of the next release part while the current part plays;
+- touch-screen OSD on the Advanced Monitor;
+- touch controls for -10 s, pause/play, +10 s, volume, info and stop;
+- exact frame-index seeking across all 86 V3 parts;
+- saved resume position (`agartha-v3 resume`);
+- adaptive 20 -> 10 FPS fallback for short lag spikes instead of random clustered drops;
+- no monitor clear between parts.
+
+Touch the monitor once to show the OSD. The bottom row becomes the control strip.
+
+## Experimental V4 image test
+
+`v4test` plays a 60-second sample encoded with a direct semigraphics-cell optimiser.
+Instead of quantising all pixels first, the encoder scores foreground/background
+palette pairs directly against the six original RGB pixels represented by each
+2x3 CC cell. A weak temporal tie-breaker reduces unstable near-equal glyph choices.
+
+This test intentionally uses the same 20 FPS geometry and V3 audio so visual changes
+can be compared directly.
+
+## Audio A/B/C test
+
+`audiotest a`, `audiotest b`, and `audiotest c` compare three 20-second
+DFPWM preprocessing profiles:
+
+- A: neutral / 16 kHz low-pass;
+- B: smoother / 13.5 kHz low-pass;
+- C: gentle presence boost / 15 kHz low-pass.
+
+Use the profile which sounds best through the actual in-game speakers as the basis
+for a future full-media re-encode.
