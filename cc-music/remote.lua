@@ -1,6 +1,6 @@
 -- CC-Music Pocket/Computer Remote
 local PROTOCOL = "ccmusic.v2"
-local VERSION = "2.0.0"
+local VERSION = "3.0.0"
 
 local function nowMs()
     if os.epoch then return os.epoch("utc") end
@@ -62,7 +62,13 @@ local function draw()
         term.write(string.format("VOL %d%%  %s", math.floor((status.volume or 0) * 100 + 0.5), tostring(status.loop or "all"):upper()))
         term.setCursorPos(2, 7)
         term.write((status.shuffle and "SHUFFLE  " or "ORDER    ") .. tostring(status.speakers or 0) .. " spk")
-        if status.error then term.setCursorPos(2, 9); term.setTextColor(colors.red); term.write(tostring(status.error):sub(1, w - 2)) end
+        term.setCursorPos(2, 8)
+        local audio = tostring(status.audio_mode or "MONO")
+        local rate = tonumber(status.source_rate) or 0
+        if rate > 0 then audio = audio .. " " .. tostring(math.floor(rate / 1000 + 0.5)) .. "k" end
+        if status.passthrough then audio = audio .. " DIRECT" end
+        term.write(audio:sub(1, math.max(1, w - 2)))
+        if status.error then term.setCursorPos(2, 10); term.setTextColor(colors.red); term.write(tostring(status.error):sub(1, w - 2)) end
     else
         term.setCursorPos(2, 3); term.setTextColor(colors.orange); term.write("Searching for player...")
     end
