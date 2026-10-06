@@ -1200,6 +1200,11 @@ local function audioLoop()
             state.playedSamples = 0
             state.flight = nil
             state.lyrics = {}
+            state.sourceChannels = 1
+            state.sourceRate = 0
+            state.sourceFormat = "SQSH1"
+            state.activeAudioMode = "MONO"
+            state.audioPassthrough = false
             stopSpeakers()
 
             local handle, err = openTrack(track)
@@ -1224,39 +1229,112 @@ local function audioLoop()
                     end
                 else
                     track.rate = header.rate
+                    track.channels = header.channels
+                    track.format = header.format
                     track.audioBytes = header.audioBytes
                     track.lyricsBytes = header.lyricBytes
                     track.duration = header.audioBytes * 8 / header.rate
+
+                    state.sourceChannels = header.channels
+                    state.sourceRate = header.rate
+                    state.sourceFormat = header.format
                     state.lyrics = parseLyrics(header.lyricsRaw)
-                    local decoder = dfpwm.make_decoder()
-                    local resampleContext = {}
+
                     local remaining = header.audioBytes
                     state.loading = false
 
-                    while state.running and generation == state.generation and remaining > 0 do
-                        while state.paused and state.running and generation == state.generation do
-                            local ev = os.pullEventRaw()
-                            if ev == "ccmusic_shutdown" then break end
-                        end
-                        if not state.running or generation ~= state.generation then break end
+                    if header.channels == 2 then
+                        local leftDecoder, rightDecoder = dfpwm.make_decoder(), dfpwm.make_decoder()
+                        local leftResample, rightResample = {}, {}
+                        local leftPassthrough, rightPassthrough = makeDfpwmPassthrough(), makeDfpwmPassthrough()
+                        local mixStereo = makeStereoMixer()
 
-                        local want = math.min(chunkBytesForRate(header.rate), remaining)
-                        local chunk = handle.read(want)
-                        if not chunk or #chunk == 0 then
-                            state.error = "Unexpected end of SQSH stream"
-                            break
-                        end
-                        remaining = remaining - #chunk
+                        while state.running and generation == state.generation and remaining > 0 do
+                            while state.paused and state.running and generation == state.generation do
+                                local ev = os.pullEventRaw()
+                                if ev == "ccmusic_shutdown" then break end
+                            end
+                            if not state.running or generation ~= state.generation then break end
 
-                        local okDecode, decoded = pcall(decoder, chunk)
-                        if not okDecode or type(decoded) ~= "table" then
-                            state.error = "DFPWM decode failed"
-                            break
-                        end
+                            local want = math.min(header.blockBytes or CONFIG.stereoChunkBytes, remaining)
+                            local leftChunk = readExact(handle, want)
+                            local rightChunk = readExact(handle, want)
+                            if not leftChunk or not rightChunk then
+                                state.error = "Unexpected end of SQSH2 stereo stream"
+                                break
+                            end
+                            remaining = remaining - want
 
-                        analyzeAudio(decoded, header.rate)
-                        local pcm = resample48k(decoded, header.rate, resampleContext)
-                        if not playPcmBlock(pcm, generation) then break end
+                            local okL, decodedL = pcall(leftDecoder, leftChunk)
+                            local okR, decodedR = pcall(rightDecoder, rightChunk)
+                            if not okL or not okR or type(decodedL) ~= "table" or type(decodedR) ~= "table" then
+                                state.error = "Stereo DFPWM decode failed"
+                                break
+                            end
+
+                            local analysisMono = mixStereo(decodedL, decodedR)
+                            analyzeAudio(analysisMono, header.rate)
+
+                            local wantStereo = CONFIG.audioMode ~= "mono" and stereoRouteAvailable()
+                            if wantStereo then
+                                local leftPcm, rightPcm
+                                if CONFIG.passthrough48k and header.rate == 48000 then
+                                    leftPcm, rightPcm = leftPassthrough(leftChunk), rightPassthrough(rightChunk)
+                                    state.audioPassthrough = true
+                                else
+                                    leftPcm = resample48k(decodedL, header.rate, leftResample)
+                                    rightPcm = resample48k(decodedR, header.rate, rightResample)
+                                    state.audioPassthrough = false
+                                end
+                                state.activeAudioMode = "STEREO"
+                                if not playStereoPcmBlock(leftPcm, rightPcm, generation) then break end
+                            else
+                                -- Automatic fallback when only one speaker is present,
+                                -- or when the user explicitly selects mono.
+                                state.activeAudioMode = "MONO"
+                                state.audioPassthrough = false
+                                local monoPcm = resample48k(analysisMono, header.rate, {})
+                                if not playPcmBlock(monoPcm, generation) then break end
+                            end
+                        end
+                    else
+                        local decoder = dfpwm.make_decoder()
+                        local passthrough = makeDfpwmPassthrough()
+                        local resampleContext = {}
+
+                        while state.running and generation == state.generation and remaining > 0 do
+                            while state.paused and state.running and generation == state.generation do
+                                local ev = os.pullEventRaw()
+                                if ev == "ccmusic_shutdown" then break end
+                            end
+                            if not state.running or generation ~= state.generation then break end
+
+                            local want = math.min(chunkBytesForRate(header.rate), remaining)
+                            local chunk = handle.read(want)
+                            if not chunk or #chunk == 0 then
+                                state.error = "Unexpected end of SQSH1 stream"
+                                break
+                            end
+                            remaining = remaining - #chunk
+
+                            local okDecode, decoded = pcall(decoder, chunk)
+                            if not okDecode or type(decoded) ~= "table" then
+                                state.error = "DFPWM decode failed"
+                                break
+                            end
+
+                            analyzeAudio(decoded, header.rate)
+                            local pcm
+                            if CONFIG.passthrough48k and header.rate == 48000 then
+                                pcm = passthrough(chunk)
+                                state.audioPassthrough = true
+                            else
+                                pcm = resample48k(decoded, header.rate, resampleContext)
+                                state.audioPassthrough = false
+                            end
+                            state.activeAudioMode = "MONO"
+                            if not playPcmBlock(pcm, generation) then break end
+                        end
                     end
 
                     safeClose(handle)
