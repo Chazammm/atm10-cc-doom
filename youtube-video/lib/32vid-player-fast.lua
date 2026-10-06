@@ -421,24 +421,25 @@ term.clear()
 local mediaStart = sessionStart
 local videoFrame = 0
 local subtitles = {}
+local pendingLeft, pendingRight
+local pendingLeftFrame, pendingRightFrame
 
 for _ = 1, nframes do
     local header = file.read(5)
     if not header or #header < 5 then break end
     local size, frameType = ("<IB"):unpack(header)
+    local skipping = videoFrame < skipFrames
 
     if frameType == 1 then
-        -- Standard mono audio. V3 keeps this as a fallback when stereo has not
-        -- been configured, so the file still works with one ordinary speaker.
         local audio = file.read(size)
-        if speaker and not muteAudio and (not hasStereoAudio or not stereoActive) then
-            local samples = decodeAudio(audio, normalDecoder)
+        if not skipping and speaker and not muteAudio and (not hasStereoAudio or not stereoActive) then
+            local samples = decodeAudio(audio, normalDecoder, monoPassthrough, monoPCM)
             if stereoActive and not hasStereoAudio then
-                -- Legacy V1/V2 files only contain mono. When a stereo pair is
-                -- configured, mirror that mono stream to both physical speakers
-                -- instead of silently using just whichever speaker find() returned.
-                playSamplesOn(leftSpeaker, leftName, samples, leftVolume)
-                playSamplesOn(rightSpeaker, rightName, samples, rightVolume)
+                -- Legacy mono mirrored to both speakers in the same scheduler slice.
+                parallel.waitForAll(
+                    function() playSamplesOn(leftSpeaker, leftName, samples, leftVolume) end,
+                    function() playSamplesOn(rightSpeaker, rightName, samples, rightVolume) end
+                )
             else
                 playSamplesOn(speaker, speakerName, samples, volume)
             end
@@ -449,26 +450,24 @@ for _ = 1, nframes do
         end
 
     elseif frameType == 2 then
-        -- V3 left-channel DFPWM chunk.
         local audio = file.read(size)
-        if hasStereoAudio and stereoActive and not muteAudio then
-            local samples = decodeAudio(audio, leftNormalDecoder)
-            playSamplesOn(leftSpeaker, leftName, samples, leftVolume)
-            if not mediaStart then
-                mediaStart = os.epoch("utc")
-                if sessionActive then settings.set("musicvideo.session_start", mediaStart) end
-            end
+        if not skipping and hasStereoAudio and stereoActive and not muteAudio then
+            pendingLeft = decodeAudio(audio, leftNormalDecoder, leftPassthrough, leftPCM)
+            pendingLeftFrame = videoFrame
         end
 
     elseif frameType == 3 then
-        -- V3 right-channel DFPWM chunk.
         local audio = file.read(size)
-        if hasStereoAudio and stereoActive and not muteAudio then
-            local samples = decodeAudio(audio, rightNormalDecoder)
-            playSamplesOn(rightSpeaker, rightName, samples, rightVolume)
-            if not mediaStart then
-                mediaStart = os.epoch("utc")
-                if sessionActive then settings.set("musicvideo.session_start", mediaStart) end
+        if not skipping and hasStereoAudio and stereoActive and not muteAudio then
+            pendingRight = decodeAudio(audio, rightNormalDecoder, rightPassthrough, rightPCM)
+            pendingRightFrame = videoFrame
+            if pendingLeft and pendingLeftFrame == pendingRightFrame then
+                playStereo(pendingLeft, pendingRight)
+                pendingLeft, pendingRight = nil, nil
+                if not mediaStart then
+                    mediaStart = os.epoch("utc")
+                    if sessionActive then settings.set("musicvideo.session_start", mediaStart) end
+                end
             end
         end
 
