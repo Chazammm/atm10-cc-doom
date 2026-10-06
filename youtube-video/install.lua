@@ -4,6 +4,7 @@ local files = {
   ["playlist.lua"] = "/playlist.lua",
   ["agartha.lua"] = "/agartha.lua",
   ["agartha-v2.lua"] = "/agartha-v2.lua",
+  ["agartha-v3.lua"] = "/agartha-v3.lua",
   ["monitorinfo.lua"] = "/videoinfo.lua",
   ["videobench.lua"] = "/videobench.lua",
   ["videobench20.lua"] = "/videobench20.lua",
@@ -39,7 +40,8 @@ print("Installed maximum-quality player.")
 print("Run: videoinfo")
 print("Run: video <direct .32vid URL>")
 print("Run: agartha        -- current 4 FPS media")
-print("Run: agartha-v2     -- 10 FPS max-quality media")
+print("Run: agartha-v2     -- 10 FPS legacy max-quality media")
+print("Run: agartha-v3     -- 20 FPS / 8x5 / optional stereo")
 print("Run: videobench     -- normal V2 benchmark")
 print("Run: videobench20   -- 20 FPS ceiling stress test")
 print("Run: stereosetup    -- optional true stereo with 2 speakers")
