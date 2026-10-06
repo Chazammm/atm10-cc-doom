@@ -1,4 +1,5 @@
 local base = "https://raw.githubusercontent.com/Chazammm/atm10-cc-doom/main/youtube-video/"
+local cacheBust = "?v=20261006-1300"
 local files = {
   ["player.lua"] = "/video.lua",
   ["playlist.lua"] = "/playlist.lua",
@@ -22,7 +23,7 @@ if not fs.exists("/video-lib") then fs.makeDir("/video-lib") end
 
 for remote, localPath in pairs(files) do
   print("Installing " .. localPath)
-  local h, err = http.get(base .. remote)
+  local h, err = http.get(base .. remote .. cacheBust, { ["Cache-Control"] = "no-cache" })
   if not h then error(err or ("Failed to download " .. remote)) end
   local data = h.readAll()
   h.close()
