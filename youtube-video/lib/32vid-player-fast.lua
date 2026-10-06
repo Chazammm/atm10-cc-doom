@@ -6,8 +6,11 @@ local bit_band, bit_lshift, bit_rshift = bit32.band, bit32.lshift, bit32.rshift
 local math_frexp = math.frexp
 local function log2(n) local _, r = math_frexp(n) return r - 1 end
 
-local path, endMode = ...
-if not path then error("Usage: 32vid-player-fast <file-or-url> [keep]") end
+local path, endMode, skipArg, baseArg, totalArg = ...
+if not path then error("Usage: 32vid-player-fast <file-or-url> [keep] [skipFrames] [baseFrame] [totalFrames]") end
+local skipFrames = math.max(0, tonumber(skipArg) or 0)
+local explicitBaseFrame = tonumber(baseArg)
+local totalFrames = tonumber(totalArg) or tonumber(settings.get("musicvideo.total_frames"))
 
 local function wrapSpeaker(name)
     if type(name) ~= "string" then return nil end
@@ -49,6 +52,8 @@ local dropFactor = tonumber(settings.get("musicvideo.drop_factor")) or 1.0
 local diffRows = settings.get("musicvideo.diff_rows")
 if diffRows == nil then diffRows = true end
 local showStats = settings.get("musicvideo.stats") == true
+local adaptiveEnabled = settings.get("musicvideo.adaptive_fps")
+if adaptiveEnabled == nil then adaptiveEnabled = true end
 local fpsOverride = tonumber(settings.get("musicvideo.fps_override"))
 local muteAudio = settings.get("musicvideo.mute") == true
 
@@ -56,19 +61,24 @@ local muteAudio = settings.get("musicvideo.mute") == true
 -- part boundaries behave as one continuous movie instead of re-syncing A/V.
 local sessionActive = settings.get("musicvideo.session_active") == true
 local sessionStart = sessionActive and tonumber(settings.get("musicvideo.session_start")) or nil
-local frameOffset = sessionActive and (tonumber(settings.get("musicvideo.session_frame")) or 0) or 0
+local sessionFrame = sessionActive and (tonumber(settings.get("musicvideo.session_frame")) or 0) or 0
+local frameOffset = explicitBaseFrame or sessionFrame
 
 local stats = {
     frames = 0,
     dropped = 0,
     rows = 0,
     backpressure = 0,
+    adaptiveSkipped = 0,
+    adaptiveBursts = 0,
     decodeMs = 0,
     renderMs = 0,
     started = os.epoch("utc"),
 }
 
 local function openSource(source)
+    if type(source) == "table" and type(source.read) == "function" then return source end
+    if type(source) ~= "string" then error("Invalid 32vid source") end
     if source:match("^https?://") then
         local h, err = http.get(source, nil, true)
         if not h then error(err or ("Could not open " .. source)) end
