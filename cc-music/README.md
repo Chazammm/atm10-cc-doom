@@ -117,9 +117,12 @@ Native 48 kHz files can use DFPWM passthrough. The player expands each stored DF
 
 The included converter uses the same neutral mastering direction selected for the Agartha project:
 
-- SoXR resampling to 48 kHz;
-- 16 kHz low-pass;
-- limiter headroom;
+- 20 Hz high-pass/DC cleanup;
+- SoXR resampling to 48 kHz at precision 33;
+- neutral 16 kHz low-pass;
+- float32 stereo staging before channel split;
+- -1 dB limiter headroom;
+- optional measured two-pass EBU loudness normalization;
 - true channel separation for stereo sources.
 
 Converter:
@@ -169,6 +172,7 @@ ccmusic.loop                all
 ccmusic.text_scale          0.5
 ccmusic.chunk_bytes         0
 ccmusic.hq_resampler        true
+ccmusic.legacy_resampler    sinc8
 ccmusic.ui_fps              8
 ccmusic.start_track         Sundress
 
@@ -215,6 +219,7 @@ The Rednet remote also shows the active channel mode/sample rate and supports `A
 ## Efficiency changes in 3.0
 
 - Native 48 kHz DFPWM playback uses reusable passthrough buffers.
+- Legacy 24 kHz tracks now default to a six-multiply Blackman-windowed sinc half-step interpolator (`sinc8`) instead of cubic interpolation; `cubic` and `linear` remain available as fallbacks.
 - Only the last analysis window is decoded for the visualizer during passthrough, avoiding huge temporary PCM tables.
 - LEFT/RIGHT buffers are submitted in the same scheduler slice.
 - Mono multi-speaker playback also submits all speaker buffers concurrently.
