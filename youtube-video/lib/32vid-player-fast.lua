@@ -166,6 +166,14 @@ if ctype ~= 0x0C then file.close() error("Fast player requires a combined stream
 -- with a private high flag. Without this flag, configured stereo speakers must
 -- not disable ordinary mono V1/V2 audio.
 local hasStereoAudio = bit32.btest(flags, 0x8000)
+
+-- Early full-V4 media was written with the custom-video + stereo private flags
+-- (0xC003) but accidentally omitted the standard DFPWM-audio bit (0x0004).
+-- Those release assets are otherwise valid and already uploaded. Treat this
+-- specific direct-cell/stereo format as DFPWM so we do not need to re-upload
+-- ~2.1 GiB of media just to flip one header bit.
+local audioIsDfpwm = bit32.btest(flags, 0x0004) or (directCells and hasStereoAudio)
+
 if bit32.btest(flags, 0x20) then file.close() error("Fast player expects one connected monitor surface, not 32vid multi-monitor mode") end
 
 local tw, th = term.getSize()
@@ -413,7 +421,7 @@ local function playStereo(leftSamples, rightSamples)
 end
 
 local function decodeAudio(audio, decoder, passthrough, pcm)
-    if bit_band(flags, 12) == 0 then
+    if not audioIsDfpwm then
         return pcm(audio)
     elseif audioMode == "passthrough" then
         return passthrough(audio)
