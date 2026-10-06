@@ -2,7 +2,7 @@
 -- Designed for large Advanced Monitor walls and SQSH1/SQSH2 (DFPWM) audio files.
 -- Repository default: https://github.com/Di33le/CC-Music
 
-local VERSION = "3.1.0"
+local VERSION = "3.2.0"
 local PROTOCOL = "ccmusic.v2"
 local INDEX_CACHE = "/.ccmusic-index.json"
 
@@ -34,7 +34,8 @@ defineSetting("ccmusic.text_scale", 0.5, "number", "Advanced Monitor text scale"
 defineSetting("ccmusic.chunk_bytes", 0, "number", "DFPWM bytes per chunk; 0 = automatic maximum safe size")
 defineSetting("ccmusic.hq_resampler", true, "boolean", "Use higher-quality 24 kHz -> 48 kHz interpolation")
 defineSetting("ccmusic.legacy_resampler", "sinc8", "string", "24 kHz upsampler: sinc8, cubic, or linear")
-defineSetting("ccmusic.ui_fps", 8, "number", "Maximum UI refresh rate")
+defineSetting("ccmusic.ui_fps", 12, "number", "Maximum UI refresh rate")
+defineSetting("ccmusic.viz_slice_bytes", 512, "number", "DFPWM bytes per visualizer/audio scheduling slice at 48 kHz")
 defineSetting("ccmusic.start_track", "Sundress", "string", "Preferred title substring to play first")
 defineSetting("ccmusic.library_repo", "Chazammm/atm10-cc-doom", "string", "Repository containing the CC-Music release library")
 defineSetting("ccmusic.library_tag", "cc-music-library-v1", "string", "GitHub release tag containing library.json and SQSH assets")
@@ -62,7 +63,8 @@ local CONFIG = {
     chunkBytes = math.floor(tonumber(getSetting("ccmusic.chunk_bytes", 0)) or 0),
     hqResampler = getSetting("ccmusic.hq_resampler", true) ~= false,
     legacyResampler = tostring(getSetting("ccmusic.legacy_resampler", "sinc8")):lower(),
-    uiFps = tonumber(getSetting("ccmusic.ui_fps", 8)) or 8,
+    uiFps = tonumber(getSetting("ccmusic.ui_fps", 12)) or 12,
+    vizSliceBytes = math.floor(tonumber(getSetting("ccmusic.viz_slice_bytes", 512)) or 512),
     startTrack = tostring(getSetting("ccmusic.start_track", "Sundress")),
     libraryRepo = tostring(getSetting("ccmusic.library_repo", "Chazammm/atm10-cc-doom")),
     libraryTag = tostring(getSetting("ccmusic.library_tag", "cc-music-library-v1")),
@@ -74,7 +76,8 @@ local CONFIG = {
     stereoChunkBytes = math.floor(tonumber(getSetting("ccmusic.stereo_chunk_bytes", 8192)) or 8192),
 }
 if CONFIG.chunkBytes ~= 0 then CONFIG.chunkBytes = math.max(256, math.min(16384, CONFIG.chunkBytes)) end
-CONFIG.uiFps = math.max(2, math.min(12, CONFIG.uiFps))
+CONFIG.uiFps = math.max(2, math.min(16, CONFIG.uiFps))
+CONFIG.vizSliceBytes = math.max(256, math.min(2048, CONFIG.vizSliceBytes))
 if CONFIG.textScale < 0.5 then CONFIG.textScale = 0.5 end
 if CONFIG.textScale > 5 then CONFIG.textScale = 5 end
 if CONFIG.legacyResampler ~= "sinc8" and CONFIG.legacyResampler ~= "cubic" and CONFIG.legacyResampler ~= "linear" then CONFIG.legacyResampler = "sinc8" end
@@ -350,7 +353,7 @@ local function loadReleaseLibrary()
 
     table.sort(tracks, function(a, b) return a.title:lower() < b.title:lower() end)
     if #tracks == 0 then return nil, "Music release contains no uploaded SQSH assets" end
-    return tracks, manifest and nil or "library.json unavailable; using release metadata"
+    return tracks, nil
 end
 
 local function loadLibrary()
@@ -395,8 +398,14 @@ local state = {
     flight = nil,
     lyrics = {},
     bands = {},
+    bandTargets = {},
+    bandPeaks = {},
+    bandPeakHold = {},
     rms = 0,
+    rmsTarget = 0,
+    vizBass = 0,
     vizGain = 1,
+    vizLastMs = nil,
     searchMode = false,
     search = "",
     queueScroll = 0,
@@ -814,7 +823,12 @@ end
 local VIZ_FREQS = { 70, 100, 145, 205, 290, 410, 580, 820, 1160, 1640, 2320, 3280, 4640, 6560, 8500, 10800 }
 local vizCoeffCache = {}
 
-for i = 1, #VIZ_FREQS do state.bands[i] = 0 end
+for i = 1, #VIZ_FREQS do
+    state.bands[i] = 0
+    state.bandTargets[i] = 0
+    state.bandPeaks[i] = 0
+    state.bandPeakHold[i] = 0
+end
 
 local function getVizCoefficients(rate)
     local cache = vizCoeffCache[rate]
@@ -842,8 +856,7 @@ local function analyzeAudio(samples, rate)
         local v = (samples[j] or 0) / 128
         sumSq = sumSq + v * v
     end
-    local rms = math.sqrt(sumSq / n)
-    state.rms = state.rms * 0.72 + rms * 0.28
+    state.rmsTarget = math.sqrt(sumSq / n)
 
     for b = 1, #VIZ_FREQS do
         local coeff = coeffs[b]
@@ -860,24 +873,68 @@ local function analyzeAudio(samples, rate)
         if mag > maxMag then maxMag = mag end
     end
 
+    -- Slow automatic gain compensation prevents quiet masters from looking
+    -- dead while avoiding the pumping/jumping caused by instant normalization.
     local wanted = 1
     if maxMag > 0.005 then wanted = clamp(0.65 / maxMag, 0.7, 16) end
     if wanted < state.vizGain then
-        state.vizGain = state.vizGain * 0.55 + wanted * 0.45
+        state.vizGain = state.vizGain * 0.72 + wanted * 0.28
     else
-        state.vizGain = state.vizGain * 0.90 + wanted * 0.10
+        state.vizGain = state.vizGain * 0.94 + wanted * 0.06
     end
 
     for i = 1, #mags do
         local v = clamp(mags[i] * state.vizGain, 0, 1)
+        -- Gentle perceptual lift: low-level detail remains visible without
+        -- making loud bands slam permanently against 100%.
         v = math.sqrt(v)
-        local old = state.bands[i] or 0
-        if v > old then
-            state.bands[i] = old * 0.25 + v * 0.75
-        else
-            state.bands[i] = old * 0.78 + v * 0.22
-        end
+        local previousTarget = state.bandTargets[i] or 0
+        state.bandTargets[i] = previousTarget * 0.18 + v * 0.82
     end
+end
+
+local function advanceVisualizer()
+    local now = nowMs()
+    local last = state.vizLastMs or now
+    local dt = clamp((now - last) / 1000, 0, 0.25)
+    state.vizLastMs = now
+    if dt <= 0 then return end
+
+    local active = state.current and not state.paused and not state.loading and not state.error
+    local rmsTarget = active and (state.rmsTarget or 0) or 0
+
+    -- Exponential attack/release. Fast attack catches drums; slower release
+    -- gives the bars inertia instead of the old frame-to-frame twitch.
+    local rmsTau = rmsTarget > (state.rms or 0) and 0.045 or 0.20
+    local rmsK = 1 - math.exp(-dt / rmsTau)
+    state.rms = (state.rms or 0) + (rmsTarget - (state.rms or 0)) * rmsK
+
+    local bassSum = 0
+    for i = 1, #VIZ_FREQS do
+        local target = active and (state.bandTargets[i] or 0) or 0
+        local shown = state.bands[i] or 0
+        local tau = target > shown and 0.050 or 0.24
+        local k = 1 - math.exp(-dt / tau)
+        shown = shown + (target - shown) * k
+        if shown < 0.002 then shown = 0 end
+        state.bands[i] = shown
+
+        local peak = state.bandPeaks[i] or 0
+        if shown >= peak then
+            peak = shown
+            state.bandPeakHold[i] = now + 180
+        elseif now >= (state.bandPeakHold[i] or 0) then
+            peak = math.max(shown, peak - dt * 0.62)
+        end
+        state.bandPeaks[i] = peak
+
+        if i <= 4 then bassSum = bassSum + shown end
+    end
+
+    local bassTarget = bassSum / 4
+    local bassTau = bassTarget > (state.vizBass or 0) and 0.055 or 0.28
+    local bassK = 1 - math.exp(-dt / bassTau)
+    state.vizBass = (state.vizBass or 0) + (bassTarget - (state.vizBass or 0)) * bassK
 end
 
 local function clampPcm8(v)
@@ -1409,6 +1466,14 @@ local function chunkBytesForRate(rate)
     return math.max(256, math.min(16384, maxBytes))
 end
 
+local function vizSliceBytesForRate(rate)
+    -- 512 DFPWM bytes at 48 kHz = 4096 samples ~= 85 ms (~11.7 Hz).
+    -- Scale at lower source rates so visual response stays around the same
+    -- real-time cadence.
+    local scaled = math.floor(CONFIG.vizSliceBytes * rate / 48000 + 0.5)
+    return math.max(128, math.min(2048, scaled))
+end
+
 local function audioLoop()
     while state.running do
         local generation = state.generation
@@ -1535,46 +1600,67 @@ local function audioLoop()
                             end
                             remaining = remaining - want
 
-                            local wantStereo = CONFIG.audioMode ~= "mono" and stereoRouteAvailable()
-                            local directStereo = wantStereo and CONFIG.passthrough48k and header.rate == 48000
-                            local decodedL, decodedR
-
-                            if directStereo then
-                                decodedL = stereo.leftTail(leftChunk)
-                                decodedR = stereo.rightTail(rightChunk)
-                            else
-                                local okL, valueL = pcall(stereo.leftDecoder, leftChunk)
-                                local okR, valueR = pcall(stereo.rightDecoder, rightChunk)
-                                if not okL or not okR or type(valueL) ~= "table" or type(valueR) ~= "table" then
-                                    state.error = "Stereo DFPWM decode failed"
+                            local sliceBytes = vizSliceBytesForRate(header.rate)
+                            local blockPlaybackOk = true
+                            for byteOffset = 1, #leftChunk, sliceBytes do
+                                if not state.running or generation ~= state.generation then
+                                    blockPlaybackOk = false
                                     break
                                 end
-                                decodedL, decodedR = valueL, valueR
-                            end
 
-                            local analysisMono = stereo.mix(decodedL, decodedR)
-                            analyzeAudio(analysisMono, header.rate)
+                                local lastByte = math.min(#leftChunk, byteOffset + sliceBytes - 1)
+                                local leftSlice = leftChunk:sub(byteOffset, lastByte)
+                                local rightSlice = rightChunk:sub(byteOffset, lastByte)
 
-                            if wantStereo then
-                                local leftPcm, rightPcm
+                                local wantStereo = CONFIG.audioMode ~= "mono" and stereoRouteAvailable()
+                                local directStereo = wantStereo and CONFIG.passthrough48k and header.rate == 48000
+                                local decodedL, decodedR
+
                                 if directStereo then
-                                    leftPcm = stereo.leftPassthrough(leftChunk)
-                                    rightPcm = stereo.rightPassthrough(rightChunk)
-                                    state.audioPassthrough = true
+                                    decodedL = stereo.leftTail(leftSlice)
+                                    decodedR = stereo.rightTail(rightSlice)
                                 else
-                                    leftPcm = resample48k(decodedL, header.rate, stereo.leftResample)
-                                    rightPcm = resample48k(decodedR, header.rate, stereo.rightResample)
-                                    state.audioPassthrough = false
+                                    local okL, valueL = pcall(stereo.leftDecoder, leftSlice)
+                                    local okR, valueR = pcall(stereo.rightDecoder, rightSlice)
+                                    if not okL or not okR or type(valueL) ~= "table" or type(valueR) ~= "table" then
+                                        state.error = "Stereo DFPWM decode failed"
+                                        blockPlaybackOk = false
+                                        break
+                                    end
+                                    decodedL, decodedR = valueL, valueR
                                 end
 
-                                state.activeAudioMode = "STEREO"
-                                if not playStereoPcmBlock(leftPcm, rightPcm, generation) then break end
-                            else
-                                state.activeAudioMode = "MONO"
-                                state.audioPassthrough = false
-                                local monoPcm = resample48k(analysisMono, header.rate, stereo.monoResample)
-                                if not playPcmBlock(monoPcm, generation) then break end
+                                local analysisMono = stereo.mix(decodedL, decodedR)
+                                analyzeAudio(analysisMono, header.rate)
+
+                                if wantStereo then
+                                    local leftPcm, rightPcm
+                                    if directStereo then
+                                        leftPcm = stereo.leftPassthrough(leftSlice)
+                                        rightPcm = stereo.rightPassthrough(rightSlice)
+                                        state.audioPassthrough = true
+                                    else
+                                        leftPcm = resample48k(decodedL, header.rate, stereo.leftResample)
+                                        rightPcm = resample48k(decodedR, header.rate, stereo.rightResample)
+                                        state.audioPassthrough = false
+                                    end
+
+                                    state.activeAudioMode = "STEREO"
+                                    if not playStereoPcmBlock(leftPcm, rightPcm, generation) then
+                                        blockPlaybackOk = false
+                                        break
+                                    end
+                                else
+                                    state.activeAudioMode = "MONO"
+                                    state.audioPassthrough = false
+                                    local monoPcm = resample48k(analysisMono, header.rate, stereo.monoResample)
+                                    if not playPcmBlock(monoPcm, generation) then
+                                        blockPlaybackOk = false
+                                        break
+                                    end
+                                end
                             end
+                            if not blockPlaybackOk then break end
                         end
                     else
                         while state.running and generation == state.generation and remaining > 0 do
@@ -1592,33 +1678,48 @@ local function audioLoop()
                             end
                             remaining = remaining - #chunk
 
-                            local directMono = CONFIG.passthrough48k and header.rate == 48000
-                            local decoded
-
-                            if directMono then
-                                decoded = mono.tail(chunk)
-                            else
-                                local okDecode, value = pcall(mono.decoder, chunk)
-                                if not okDecode or type(value) ~= "table" then
-                                    state.error = "DFPWM decode failed"
+                            local sliceBytes = vizSliceBytesForRate(header.rate)
+                            local blockPlaybackOk = true
+                            for byteOffset = 1, #chunk, sliceBytes do
+                                if not state.running or generation ~= state.generation then
+                                    blockPlaybackOk = false
                                     break
                                 end
-                                decoded = value
+
+                                local monoSlice = chunk:sub(byteOffset, math.min(#chunk, byteOffset + sliceBytes - 1))
+                                local directMono = CONFIG.passthrough48k and header.rate == 48000
+                                local decoded
+
+                                if directMono then
+                                    decoded = mono.tail(monoSlice)
+                                else
+                                    local okDecode, value = pcall(mono.decoder, monoSlice)
+                                    if not okDecode or type(value) ~= "table" then
+                                        state.error = "DFPWM decode failed"
+                                        blockPlaybackOk = false
+                                        break
+                                    end
+                                    decoded = value
+                                end
+
+                                analyzeAudio(decoded, header.rate)
+
+                                local pcm
+                                if directMono then
+                                    pcm = mono.passthrough(monoSlice)
+                                    state.audioPassthrough = true
+                                else
+                                    pcm = resample48k(decoded, header.rate, mono.resample)
+                                    state.audioPassthrough = false
+                                end
+
+                                state.activeAudioMode = "MONO"
+                                if not playPcmBlock(pcm, generation) then
+                                    blockPlaybackOk = false
+                                    break
+                                end
                             end
-
-                            analyzeAudio(decoded, header.rate)
-
-                            local pcm
-                            if directMono then
-                                pcm = mono.passthrough(chunk)
-                                state.audioPassthrough = true
-                            else
-                                pcm = resample48k(decoded, header.rate, mono.resample)
-                                state.audioPassthrough = false
-                            end
-
-                            state.activeAudioMode = "MONO"
-                            if not playPcmBlock(pcm, generation) then break end
+                            if not blockPlaybackOk then break end
                         end
                     end
 
@@ -1789,13 +1890,25 @@ local RAINBOW = {
 
 local function drawVisualizer(c, x1, y1, x2, y2)
     if x2 - x1 < 20 or y2 - y1 < 9 then return end
+
     local cx = math.floor((x1 + x2) / 2)
     local cy = math.floor((y1 + y2) / 2)
-    local rx = math.max(5, math.floor((x2 - x1) * 0.36))
-    local ry = math.max(3, math.floor((y2 - y1) * 0.40))
-    local pulse = clamp(state.rms * 2.2, 0, 1)
-    rx = math.min(math.floor((x2 - x1) / 2) - 1, rx + math.floor(pulse * 2))
-    ry = math.min(math.floor((y2 - y1) / 2) - 1, ry + math.floor(pulse))
+    local baseRx = math.max(5, math.floor((x2 - x1) * 0.36))
+    local baseRy = math.max(3, math.floor((y2 - y1) * 0.40))
+
+    -- Bass drives the ring more than overall RMS, so kicks visibly "breathe"
+    -- without the entire display pumping on vocals.
+    local pulse = clamp((state.vizBass or 0) * 1.35 + (state.rms or 0) * 0.45, 0, 1)
+    local rx = math.min(math.floor((x2 - x1) / 2) - 1, baseRx + math.floor(pulse * 3 + 0.5))
+    local ry = math.min(math.floor((y2 - y1) / 2) - 1, baseRy + math.floor(pulse * 1.5 + 0.5))
+
+    -- Dotted ellipse first; bars and peak markers then sit cleanly on top.
+    for deg = 0, 354, 6 do
+        local a = deg * math.pi / 180
+        local x = math.floor(cx + math.cos(a) * rx + 0.5)
+        local y = math.floor(cy + math.sin(a) * ry + 0.5)
+        c:cell(x, y, ".", colors.white, colors.black)
+    end
 
     local bands = #state.bands
     local barSpan = math.max(18, math.min(rx * 2 - 6, bands * 2))
@@ -1805,25 +1918,36 @@ local function drawVisualizer(c, x1, y1, x2, y2)
     for b = 1, bands do
         local x = startX + math.floor((b - 1) * (barSpan - 1) / math.max(1, bands - 1))
         local v = clamp(state.bands[b] or 0, 0, 1)
-        local half = math.max(1, math.floor(v * maxHalf + 0.5))
+        local half = math.floor(v * maxHalf + 0.5)
         local col = RAINBOW[b] or colors.white
-        c:fill(x, cy - half, x, cy + half, col, " ", col)
+
+        if half > 0 then
+            c:fill(x, cy - half, x, cy + half, col, " ", col)
+        end
+
+        -- Short peak hold adds readable transients and makes the spectrum feel
+        -- like a real audio meter rather than a set of twitching columns.
+        local peak = clamp(state.bandPeaks[b] or 0, 0, 1)
+        local peakHalf = math.floor(peak * maxHalf + 0.5)
+        if peakHalf > half and peakHalf > 0 then
+            c:cell(x, cy - peakHalf, ".", colors.white, colors.black)
+            c:cell(x, cy + peakHalf, ".", colors.white, colors.black)
+        end
     end
 
-    -- Dotted ellipse on top, like the reference screenshot.
-    for deg = 0, 354, 6 do
-        local a = deg * math.pi / 180
-        local x = math.floor(cx + math.cos(a) * rx + 0.5)
-        local y = math.floor(cy + math.sin(a) * ry + 0.5)
-        c:cell(x, y, ".", colors.white, colors.black)
-    end
-
-    -- Central plus/cross.
+    -- Central cross gets a tiny bass-reactive halo at strong transients.
     c:cell(cx, cy - 1, " ", colors.white, colors.white)
     c:cell(cx, cy, " ", colors.white, colors.white)
     c:cell(cx, cy + 1, " ", colors.white, colors.white)
     c:cell(cx - 1, cy, " ", colors.white, colors.white)
     c:cell(cx + 1, cy, " ", colors.white, colors.white)
+
+    if pulse > 0.68 then
+        c:cell(cx - 2, cy, ".", colors.lightGray, colors.black)
+        c:cell(cx + 2, cy, ".", colors.lightGray, colors.black)
+        c:cell(cx, cy - 2, ".", colors.lightGray, colors.black)
+        c:cell(cx, cy + 2, ".", colors.lightGray, colors.black)
+    end
 end
 
 local function filteredLibrary()
@@ -1966,6 +2090,7 @@ local function activeRemoteCount()
 end
 
 local function renderFrame()
+    advanceVisualizer()
     local target = state.target or term.current()
     local ok, w, h = pcall(target.getSize)
     if not ok or not w or not h then return end
