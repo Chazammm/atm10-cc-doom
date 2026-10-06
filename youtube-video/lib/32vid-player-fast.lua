@@ -406,7 +406,15 @@ for _ = 1, nframes do
         local audio = file.read(size)
         if speaker and not muteAudio and (not hasStereoAudio or not stereoActive) then
             local samples = decodeAudio(audio, normalDecoder)
-            playSamplesOn(speaker, speakerName, samples, volume)
+            if stereoActive and not hasStereoAudio then
+                -- Legacy V1/V2 files only contain mono. When a stereo pair is
+                -- configured, mirror that mono stream to both physical speakers
+                -- instead of silently using just whichever speaker find() returned.
+                playSamplesOn(leftSpeaker, leftName, samples, leftVolume)
+                playSamplesOn(rightSpeaker, rightName, samples, rightVolume)
+            else
+                playSamplesOn(speaker, speakerName, samples, volume)
+            end
             if not mediaStart then
                 mediaStart = os.epoch("utc")
                 if sessionActive then settings.set("musicvideo.session_start", mediaStart) end
