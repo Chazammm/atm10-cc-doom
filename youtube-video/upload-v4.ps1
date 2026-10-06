@@ -98,7 +98,7 @@ try {
     }
 
     $all = @(Get-ChildItem $temp -Filter "agartha-v4-part*.32vid" -File -Recurse)
-    if ($all.Count -eq 0) { throw "No V3 .32vid parts found." }
+    if ($all.Count -eq 0) { throw "No V4 .32vid parts found." }
 
     $numbered = @{}
     $maxPart = 0
@@ -110,7 +110,7 @@ try {
         }
     }
     if ($maxPart -ne $ExpectedParts -or $numbered.Count -ne $ExpectedParts) {
-        throw ("Expected {0} V3 parts but found {1} (highest part {2}). Download all V3 packs first." -f $ExpectedParts,$numbered.Count,$maxPart)
+        throw ("Expected {0} V4 parts but found {1} (highest part {2}). Download all V4 packs first." -f $ExpectedParts,$numbered.Count,$maxPart)
     }
     for ($i=1; $i -le $ExpectedParts; $i++) {
         if (-not $numbered.ContainsKey($i)) { throw ("Missing agartha-v4-part{0:D2}.32vid" -f $i) }
@@ -138,7 +138,7 @@ try {
     try {
         $releaseId = & $gh api "repos/$Repo/releases/tags/$Tag" --jq '.id' 2>$null
         if ($LASTEXITCODE -eq 0 -and $releaseId) {
-            $assetLines = @(& $gh api "repos/$Repo/releases/$releaseId/assets?per_page=100" --jq '.[] | [.name, (.size|tostring)] | @tsv' 2>$null)
+            $assetLines = @(& $gh api --paginate "repos/$Repo/releases/$releaseId/assets?per_page=100" --jq '.[] | [.name, (.size|tostring)] | @tsv' 2>$null)
             if ($LASTEXITCODE -eq 0) {
                 foreach ($line in $assetLines) {
                     $cols = "$line".Split([char]9)
