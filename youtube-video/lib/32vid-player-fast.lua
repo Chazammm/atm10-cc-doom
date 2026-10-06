@@ -586,8 +586,20 @@ local videoFrame = 0
 local subtitles = {}
 local pendingLeft, pendingRight
 local pendingLeftFrame, pendingRightFrame
+local lateScore, adaptiveUntil = 0, -1
+local lastResumeSave = frameOffset + skipFrames
+
+local function maybeSaveResume(globalFrame, force)
+    if not totalFrames then return end
+    if force or globalFrame - lastResumeSave >= 600 then
+        settings.set("agartha.v3.resume_frame", math.max(0, math.min(totalFrames - 1, globalFrame)))
+        settings.save()
+        lastResumeSave = globalFrame
+    end
+end
 
 for _ = 1, nframes do
+    if controlAction then break end
     local header = file.read(5)
     if not header or #header < 5 then break end
     local size, frameType = ("<IB"):unpack(header)
