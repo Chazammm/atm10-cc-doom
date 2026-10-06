@@ -90,15 +90,24 @@ if ctype ~= 0x0C then file.close() error("Fast player requires a combined stream
 if bit32.btest(flags, 0x20) then file.close() error("Fast player expects one connected monitor surface, not 32vid multi-monitor mode") end
 
 local tw, th = term.getSize()
-if width > tw or height > th then
-    file.close()
-    error(("Video is %dx%d cells, terminal is only %dx%d"):format(width, height, tw, th))
-end
 
--- Centre media which was encoded for an older/smaller monitor layout.
--- This makes legacy V1/V2 files look sane on the new 164x67 (8x5) wall.
-local xOffset = math.floor((tw - width) / 2) + 1
-local yOffset = math.floor((th - height) / 2) + 1
+-- Legacy media may have been encoded for a different monitor shape. Do not
+-- fall back to the old mini player in that case: it blindly starts at 1,1,
+-- which is what caused the grey strip and one-sided crop on the 164x67 wall.
+-- Instead crop oversized media symmetrically and centre undersized media.
+local visibleWidth = math.min(width, tw)
+local visibleHeight = math.min(height, th)
+local cropX = math.floor((width - visibleWidth) / 2)
+local cropY = math.floor((height - visibleHeight) / 2)
+local xOffset = math.floor((tw - visibleWidth) / 2) + 1
+local yOffset = math.floor((th - visibleHeight) / 2) + 1
+local leftPad = xOffset - 1
+local rightPad = tw - (xOffset + visibleWidth - 1)
+local topPad = yOffset - 1
+local bottomPad = th - (yOffset + visibleHeight - 1)
+local leftSpaces = leftPad > 0 and string.rep(" ", leftPad) or nil
+local rightSpaces = rightPad > 0 and string.rep(" ", rightPad) or nil
+local fullSpaces = string.rep(" ", tw)
 
 if fpsOverride and fpsOverride > 0 then fps = fpsOverride end
 
@@ -300,6 +309,10 @@ local function drawFrame(screen, fg, bg, palette)
 
     -- Palette changes recolour already-present monitor cells, so unchanged rows
     -- do not need to be re-blitted just because RGB palette values changed.
+    -- At the same time find the darkest current palette slot for letterbox/
+    -- padding cells. A terminal "black" cell is only an index: if that palette
+    -- index is later changed to grey, untouched padding turns grey too.
+    local darkestIndex, darkestValue = 0, math.huge
     for i = 0, 15 do
         local p = palette[i]
         local old = previousPalette[i]
@@ -307,23 +320,60 @@ local function drawFrame(screen, fg, bg, palette)
             term.setPaletteColor(2 ^ i, p[1] / 255, p[2] / 255, p[3] / 255)
             previousPalette[i] = p
         end
+        -- Weighted luma is a better "blackest" test than RGB sum.
+        local luma = p[1] * 2126 + p[2] * 7152 + p[3] * 722
+        if luma < darkestValue then
+            darkestValue = luma
+            darkestIndex = i
+        end
     end
 
-    for y = 0, height - 1 do
-        local base = y * width
-        for x = 1, width do
+    -- Repaint all out-of-video cells after the palette update. This fixes the
+    -- grey/right strip seen when old 143x81 media is shown on the 164x67 wall.
+    if leftPad > 0 or rightPad > 0 or topPad > 0 or bottomPad > 0 then
+        term.setBackgroundColor(2 ^ darkestIndex)
+        if topPad > 0 then
+            for yy = 1, topPad do
+                term.setCursorPos(1, yy)
+                term.write(fullSpaces)
+            end
+        end
+        if bottomPad > 0 then
+            for yy = th - bottomPad + 1, th do
+                term.setCursorPos(1, yy)
+                term.write(fullSpaces)
+            end
+        end
+        if leftPad > 0 or rightPad > 0 then
+            for yy = yOffset, yOffset + visibleHeight - 1 do
+                if leftSpaces then
+                    term.setCursorPos(1, yy)
+                    term.write(leftSpaces)
+                end
+                if rightSpaces then
+                    term.setCursorPos(xOffset + visibleWidth, yy)
+                    term.write(rightSpaces)
+                end
+            end
+        end
+    end
+
+    for outY = 0, visibleHeight - 1 do
+        local sourceY = cropY + outY
+        local base = sourceY * width + cropX
+        for x = 1, visibleWidth do
             local index = base + x
             rowText[x] = glyph[screen[index]]
             rowFg[x] = blitColors[fg[index]]
             rowBg[x] = blitColors[bg[index]]
         end
-        local text = table.concat(rowText, "", 1, width)
-        local fgs = table.concat(rowFg, "", 1, width)
-        local bgs = table.concat(rowBg, "", 1, width)
-        local yy = y + 1
+        local text = table.concat(rowText, "", 1, visibleWidth)
+        local fgs = table.concat(rowFg, "", 1, visibleWidth)
+        local bgs = table.concat(rowBg, "", 1, visibleWidth)
+        local yy = outY + 1
 
         if not diffRows or previousText[yy] ~= text or previousFg[yy] ~= fgs or previousBg[yy] ~= bgs then
-            term.setCursorPos(xOffset, yOffset + yy - 1)
+            term.setCursorPos(xOffset, yOffset + outY)
             term.blit(text, fgs, bgs)
             previousText[yy], previousFg[yy], previousBg[yy] = text, fgs, bgs
             stats.rows = stats.rows + 1
