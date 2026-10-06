@@ -11,6 +11,7 @@ if not path then error("Usage: 32vid-player-fast <file-or-url> [keep] [skipFrame
 local skipFrames = math.max(0, tonumber(skipArg) or 0)
 local explicitBaseFrame = tonumber(baseArg)
 local totalFrames = tonumber(totalArg) or tonumber(settings.get("musicvideo.total_frames"))
+local resumeKey = settings.get("musicvideo.resume_key") or "agartha.v3.resume_frame"
 
 local function wrapSpeaker(name)
     if type(name) ~= "string" then return nil end
@@ -698,7 +699,7 @@ local lastResumeSave = frameOffset + skipFrames
 local function maybeSaveResume(globalFrame, force)
     if not totalFrames then return end
     if force or globalFrame - lastResumeSave >= 600 then
-        settings.set("agartha.v3.resume_frame", math.max(0, math.min(totalFrames - 1, globalFrame)))
+        settings.set(resumeKey, math.max(0, math.min(totalFrames - 1, globalFrame)))
         settings.save()
         lastResumeSave = globalFrame
     end
