@@ -5,6 +5,7 @@ local files = {
   ["agartha.lua"] = "/agartha.lua",
   ["agartha-v2.lua"] = "/agartha-v2.lua",
   ["monitorinfo.lua"] = "/videoinfo.lua",
+  ["videobench.lua"] = "/videobench.lua",
   ["lib/32vid-player-mini.lua"] = "/video-lib/32vid-player-mini.lua",
   ["lib/32vid-player-fast.lua"] = "/video-lib/32vid-player-fast.lua",
 }
@@ -37,4 +38,5 @@ print("Run: videoinfo")
 print("Run: video <direct .32vid URL>")
 print("Run: agartha        -- current 4 FPS media")
 print("Run: agartha-v2     -- 10 FPS max-quality media")
+print("Run: videobench     -- benchmark part 01 for V3 tuning")
 print("Optional diagnostics: settings set musicvideo.stats true")
