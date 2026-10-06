@@ -1,4 +1,4 @@
-# CC-Music 3.5 for ATM10 8.2 / CC:Tweaked
+# CC-Music 3.5.1 for ATM10 8.2 / CC:Tweaked
 
 A large-monitor music player for CC:Tweaked, built around the `Di33le/CC-Music` library and extended with true stereo support.
 
@@ -89,7 +89,7 @@ Legacy format:
 
 ### SQSH2
 
-CC-Music 3.5 stereo format:
+CC-Music 3.5.1 stereo format:
 
 - two independent DFPWM channels;
 - 48 kHz;
