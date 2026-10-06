@@ -2033,6 +2033,9 @@ local function renderFrame()
     elseif state.paused then playbackStatus = "PAUSED"; playbackColor = colors.yellow
     elseif state.current then
         playbackStatus = "PLAYING | " .. state.sourceFormat .. " | " .. state.activeAudioMode
+        if state.streamPartCount and state.streamPartCount > 1 and state.streamPart > 0 then
+            playbackStatus = playbackStatus .. " | PART " .. state.streamPart .. "/" .. state.streamPartCount
+        end
         playbackColor = colors.lime
     else playbackStatus = "STOPPED"; playbackColor = colors.lightGray end
     c:center(statusY, playbackStatus, leftX1, leftX2, playbackColor, colors.black)
