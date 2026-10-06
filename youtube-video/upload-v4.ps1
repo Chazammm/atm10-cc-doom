@@ -6,6 +6,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ExpectedParts = 136
+$MaxHttpBytes = 16777216
 
 function Find-Gh {
     $cmd = Get-Command gh.exe -ErrorAction SilentlyContinue
@@ -116,6 +117,11 @@ try {
         if (-not $numbered.ContainsKey($i)) { throw ("Missing agartha-v4-part{0:D2}.32vid" -f $i) }
     }
     $files = @(1..$ExpectedParts | ForEach-Object { $numbered[$_] })
+    foreach ($file in $files) {
+        if ($file.Length -gt $MaxHttpBytes) {
+            throw ("{0} is {1} bytes, above the CC:Tweaked 16 MiB HTTP limit." -f $file.Name,$file.Length)
+        }
+    }
 
     $totalMiB = [Math]::Round((($files | Measure-Object Length -Sum).Sum / 1MB),1)
     Write-Host ("Found {0} parts ({1} MiB)." -f $files.Count,$totalMiB) -ForegroundColor Green
