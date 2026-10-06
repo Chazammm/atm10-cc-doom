@@ -154,7 +154,7 @@ function Ensure-Python {
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if ($winget) {
         Write-Host "Real Python was not found. Installing Python 3.13 for the current user..." -ForegroundColor Cyan
-        & $winget.Source install --id Python.Python.3.13 -e --source winget --scope user --accept-package-agreements --accept-source-agreements
+        & $winget.Source install --id Python.Python.3.13 -e --source winget --scope user --accept-package-agreements --accept-source-agreements | Out-Host
         if ($LASTEXITCODE -eq 0) {
             $base = Join-Path $env:LOCALAPPDATA "Programs\Python"
             $after = @(Get-ChildItem -Path $base -Filter "python.exe" -File -Recurse -ErrorAction SilentlyContinue |
@@ -200,7 +200,8 @@ if ($inputMode -eq "folder" -and -not (Test-Path $inputPath -PathType Container)
     throw "Source folder not found: $inputPath"
 }
 
-$pythonInfo = Ensure-Python
+$pythonInfo = @(Ensure-Python) | Where-Object { $_ -and $_.PSObject.Properties.Name -contains "Exe" } | Select-Object -Last 1
+if (-not $pythonInfo) { throw "Python setup completed but no interpreter descriptor was returned." }
 $python = $pythonInfo.Exe
 $pythonPrefix = @($pythonInfo.Prefix)
 $ff = Ensure-FFmpeg
