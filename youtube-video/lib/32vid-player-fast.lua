@@ -144,32 +144,41 @@ for b = 0, 255 do
     end
     bitSamples[b] = t
 end
-local audioBuffer = {}
-local audioBufferLength = 0
 
-local function passthroughDecode(data)
-    local n = #data * 8
-    local outAt = 1
-    for i = 1, #data do
-        table.move(bitSamples[data:byte(i)], 1, 8, outAt, audioBuffer)
-        outAt = outAt + 8
+-- Keep independent PCM tables per channel. Reusing one table for L and R means
+-- decoding the right block mutates the samples which the left speaker still uses.
+local function makePassthroughDecoder()
+    local buffer, oldLength = {}, 0
+    return function(data)
+        local n, outAt = #data * 8, 1
+        for i = 1, #data do
+            table.move(bitSamples[data:byte(i)], 1, 8, outAt, buffer)
+            outAt = outAt + 8
+        end
+        if oldLength > n then
+            for i = n + 1, oldLength do buffer[i] = nil end
+        end
+        oldLength = n
+        return buffer
     end
-    if audioBufferLength > n then
-        for i = n + 1, audioBufferLength do audioBuffer[i] = nil end
-    end
-    audioBufferLength = n
-    return audioBuffer
 end
 
-local function pcmDecode(data)
-    local n = #data
-    for i = 1, n do audioBuffer[i] = data:byte(i) - 128 end
-    if audioBufferLength > n then
-        for i = n + 1, audioBufferLength do audioBuffer[i] = nil end
+local function makePCMDecoder()
+    local buffer, oldLength = {}, 0
+    return function(data)
+        local n = #data
+        for i = 1, n do buffer[i] = data:byte(i) - 128 end
+        if oldLength > n then
+            for i = n + 1, oldLength do buffer[i] = nil end
+        end
+        oldLength = n
+        return buffer
     end
-    audioBufferLength = n
-    return audioBuffer
 end
+
+local monoPassthrough, leftPassthrough, rightPassthrough =
+    makePassthroughDecoder(), makePassthroughDecoder(), makePassthroughDecoder()
+local monoPCM, leftPCM, rightPCM = makePCMDecoder(), makePCMDecoder(), makePCMDecoder()
 
 local function playSamplesOn(target, targetName, samples, targetVolume)
     if not target or not samples or #samples == 0 then return end
@@ -181,11 +190,19 @@ local function playSamplesOn(target, targetName, samples, targetVolume)
     end
 end
 
-local function decodeAudio(audio, decoder)
+local function playStereo(leftSamples, rightSamples)
+    if not stereoActive or muteAudio then return end
+    parallel.waitForAll(
+        function() playSamplesOn(leftSpeaker, leftName, leftSamples, leftVolume) end,
+        function() playSamplesOn(rightSpeaker, rightName, rightSamples, rightVolume) end
+    )
+end
+
+local function decodeAudio(audio, decoder, passthrough, pcm)
     if bit_band(flags, 12) == 0 then
-        return pcmDecode(audio)
+        return pcm(audio)
     elseif audioMode == "passthrough" then
-        return passthroughDecode(audio)
+        return passthrough(audio)
     else
         return decoder(audio)
     end
