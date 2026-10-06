@@ -5,16 +5,30 @@ param(
 )
 $ErrorActionPreference="Stop"
 
-$gh=(Get-Command gh.exe -ErrorAction SilentlyContinue).Source
-if(-not $gh){$gh=(Get-Command gh -ErrorAction SilentlyContinue).Source}
-if(-not $gh){$gh="$env:ProgramFiles\GitHub CLI\gh.exe"}
-if(-not (Test-Path $gh)){throw "GitHub CLI is not installed."}
+function Find-Gh {
+  $cmd=Get-Command gh.exe -ErrorAction SilentlyContinue
+  if(-not $cmd){$cmd=Get-Command gh -ErrorAction SilentlyContinue}
+  if($cmd){return $cmd.Source}
+  $candidate="$env:ProgramFiles\GitHub CLI\gh.exe"
+  if(Test-Path $candidate){return $candidate}
+  return $null
+}
+function Probe-Gh([string]$Gh,[string[]]$Arguments){
+  $old=$ErrorActionPreference;$ErrorActionPreference="SilentlyContinue"
+  try{& $Gh @Arguments *> $null; return [int]$LASTEXITCODE}
+  finally{$ErrorActionPreference=$old}
+}
+function Run-Gh([string]$Gh,[string[]]$Arguments){
+  $old=$ErrorActionPreference;$ErrorActionPreference="Continue"
+  try{& $Gh @Arguments 2>&1 | ForEach-Object{Write-Host $_}; $code=$LASTEXITCODE; return [int]$code}
+  finally{$ErrorActionPreference=$old}
+}
 
-$old=$ErrorActionPreference;$ErrorActionPreference="SilentlyContinue"
-& $gh auth status --hostname github.com *> $null
-$auth=$LASTEXITCODE
-$ErrorActionPreference=$old
-if($auth -ne 0){& $gh auth login --hostname github.com --git-protocol https --web}
+$gh=Find-Gh
+if(-not $gh){throw "GitHub CLI is not installed."}
+if((Probe-Gh $gh @("auth","status","--hostname","github.com")) -ne 0){
+  if((Run-Gh $gh @("auth","login","--hostname","github.com","--git-protocol","https","--web")) -ne 0){throw "GitHub login failed."}
+}
 
 $temp=Join-Path ([IO.Path]::GetTempPath()) ("agartha-v4test-"+[guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory $temp | Out-Null
@@ -25,17 +39,14 @@ try{
   $files=@(Get-ChildItem $temp -Filter "agartha-v4-test-part*.32vid" -File | Sort-Object Name)
   if($files.Count -ne 2){throw "Expected the two V4 test parts."}
 
-  $old=$ErrorActionPreference;$ErrorActionPreference="SilentlyContinue"
-  & $gh release view $Tag --repo $Repo *> $null
-  $exists=$LASTEXITCODE -eq 0
-  $ErrorActionPreference=$old
-  if(-not $exists){
-    & $gh release create $Tag --repo $Repo --title "Agartha V4 60s Quality Test" --notes "Experimental direct semigraphics cell optimiser." --latest=false
-    if($LASTEXITCODE -ne 0){throw "Could not create release."}
+  if((Probe-Gh $gh @("release","view",$Tag,"--repo",$Repo)) -ne 0){
+    if((Run-Gh $gh @("release","create",$Tag,"--repo",$Repo,"--title","Agartha V4 60s Quality Test","--notes","Experimental direct semigraphics-cell optimiser.","--latest=false")) -ne 0){throw "Could not create release."}
   }
-  & $gh release upload $Tag $files.FullName --repo $Repo --clobber
-  if($LASTEXITCODE -ne 0){throw "Upload failed."}
+  $args=@("release","upload",$Tag)
+  foreach($file in $files){$args+=$file.FullName}
+  $args+=@("--repo",$Repo,"--clobber")
+  if((Run-Gh $gh $args) -ne 0){throw "Upload failed."}
   Write-Host "Upload complete. In Minecraft run: v4test" -ForegroundColor Green
-} finally {
+}finally{
   if(Test-Path $temp){Remove-Item $temp -Recurse -Force}
 }
