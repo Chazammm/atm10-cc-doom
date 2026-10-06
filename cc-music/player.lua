@@ -2,7 +2,7 @@
 -- Designed for large Advanced Monitor walls and SQSH1/SQSH2 (DFPWM) audio files.
 -- Repository default: https://github.com/Di33le/CC-Music
 
-local VERSION = "3.2.0"
+local VERSION = "3.3.0"
 local PROTOCOL = "ccmusic.v2"
 local INDEX_CACHE = "/.ccmusic-index.json"
 
@@ -36,6 +36,7 @@ defineSetting("ccmusic.hq_resampler", true, "boolean", "Use higher-quality 24 kH
 defineSetting("ccmusic.legacy_resampler", "sinc8", "string", "24 kHz upsampler: sinc8, cubic, or linear")
 defineSetting("ccmusic.ui_fps", 12, "number", "Maximum UI refresh rate")
 defineSetting("ccmusic.viz_slice_bytes", 512, "number", "DFPWM bytes per visualizer/audio scheduling slice at 48 kHz")
+defineSetting("ccmusic.viz_mode", "classic", "string", "Visualizer: classic, mirror, or meter")
 defineSetting("ccmusic.start_track", "Sundress", "string", "Preferred title substring to play first")
 defineSetting("ccmusic.library_repo", "Chazammm/atm10-cc-doom", "string", "Repository containing the CC-Music release library")
 defineSetting("ccmusic.library_tag", "cc-music-library-v1", "string", "GitHub release tag containing library.json and SQSH assets")
@@ -65,6 +66,7 @@ local CONFIG = {
     legacyResampler = tostring(getSetting("ccmusic.legacy_resampler", "sinc8")):lower(),
     uiFps = tonumber(getSetting("ccmusic.ui_fps", 12)) or 12,
     vizSliceBytes = math.floor(tonumber(getSetting("ccmusic.viz_slice_bytes", 512)) or 512),
+    vizMode = tostring(getSetting("ccmusic.viz_mode", "classic")):lower(),
     startTrack = tostring(getSetting("ccmusic.start_track", "Sundress")),
     libraryRepo = tostring(getSetting("ccmusic.library_repo", "Chazammm/atm10-cc-doom")),
     libraryTag = tostring(getSetting("ccmusic.library_tag", "cc-music-library-v1")),
@@ -78,6 +80,7 @@ local CONFIG = {
 if CONFIG.chunkBytes ~= 0 then CONFIG.chunkBytes = math.max(256, math.min(16384, CONFIG.chunkBytes)) end
 CONFIG.uiFps = math.max(2, math.min(16, CONFIG.uiFps))
 CONFIG.vizSliceBytes = math.max(256, math.min(2048, CONFIG.vizSliceBytes))
+if CONFIG.vizMode ~= "classic" and CONFIG.vizMode ~= "mirror" and CONFIG.vizMode ~= "meter" then CONFIG.vizMode = "classic" end
 if CONFIG.textScale < 0.5 then CONFIG.textScale = 0.5 end
 if CONFIG.textScale > 5 then CONFIG.textScale = 5 end
 if CONFIG.legacyResampler ~= "sinc8" and CONFIG.legacyResampler ~= "cubic" and CONFIG.legacyResampler ~= "linear" then CONFIG.legacyResampler = "sinc8" end
@@ -401,6 +404,10 @@ local state = {
     bandTargets = {},
     bandPeaks = {},
     bandPeakHold = {},
+    bandsL = {},
+    bandsR = {},
+    bandTargetsL = {},
+    bandTargetsR = {},
     rms = 0,
     rmsTarget = 0,
     vizBass = 0,
@@ -682,6 +689,14 @@ local function cycleAudioMode()
     interruptAudio("audio_mode")
 end
 
+local function cycleVizMode()
+    if CONFIG.vizMode == "classic" then CONFIG.vizMode = "mirror"
+    elseif CONFIG.vizMode == "mirror" then CONFIG.vizMode = "meter"
+    else CONFIG.vizMode = "classic" end
+    saveSetting("ccmusic.viz_mode", CONFIG.vizMode)
+    state._frameInvalid = true
+end
+
 -- ---------------------------------------------------------------------------
 -- SQSH + lyrics
 -- ---------------------------------------------------------------------------
@@ -828,6 +843,10 @@ for i = 1, #VIZ_FREQS do
     state.bandTargets[i] = 0
     state.bandPeaks[i] = 0
     state.bandPeakHold[i] = 0
+    state.bandsL[i] = 0
+    state.bandsR[i] = 0
+    state.bandTargetsL[i] = 0
+    state.bandTargetsR[i] = 0
 end
 
 local function getVizCoefficients(rate)
@@ -842,9 +861,10 @@ local function getVizCoefficients(rate)
     return cache
 end
 
-local function analyzeAudio(samples, rate)
+
+local function spectrumOf(samples, rate)
     local count = #samples
-    if count == 0 then return end
+    if count == 0 then return nil, 0, 0 end
     local n = math.min(384, count)
     local start = count - n + 1
     local coeffs = getVizCoefficients(rate)
@@ -856,7 +876,6 @@ local function analyzeAudio(samples, rate)
         local v = (samples[j] or 0) / 128
         sumSq = sumSq + v * v
     end
-    state.rmsTarget = math.sqrt(sumSq / n)
 
     for b = 1, #VIZ_FREQS do
         local coeff = coeffs[b]
@@ -873,8 +892,10 @@ local function analyzeAudio(samples, rate)
         if mag > maxMag then maxMag = mag end
     end
 
-    -- Slow automatic gain compensation prevents quiet masters from looking
-    -- dead while avoiding the pumping/jumping caused by instant normalization.
+    return mags, maxMag, math.sqrt(sumSq / n)
+end
+
+local function updateVizGain(maxMag)
     local wanted = 1
     if maxMag > 0.005 then wanted = clamp(0.65 / maxMag, 0.7, 16) end
     if wanted < state.vizGain then
@@ -882,14 +903,43 @@ local function analyzeAudio(samples, rate)
     else
         state.vizGain = state.vizGain * 0.94 + wanted * 0.06
     end
+end
+
+local function perceptualBand(mag)
+    local v = clamp((mag or 0) * state.vizGain, 0, 1)
+    return math.sqrt(v)
+end
+
+local function analyzeAudio(samples, rate)
+    local mags, maxMag, rms = spectrumOf(samples, rate)
+    if not mags then return end
+    updateVizGain(maxMag)
+    state.rmsTarget = rms
 
     for i = 1, #mags do
-        local v = clamp(mags[i] * state.vizGain, 0, 1)
-        -- Gentle perceptual lift: low-level detail remains visible without
-        -- making loud bands slam permanently against 100%.
-        v = math.sqrt(v)
+        local v = perceptualBand(mags[i])
         local previousTarget = state.bandTargets[i] or 0
         state.bandTargets[i] = previousTarget * 0.18 + v * 0.82
+        state.bandTargetsL[i] = state.bandTargets[i]
+        state.bandTargetsR[i] = state.bandTargets[i]
+    end
+end
+
+local function analyzeStereoAudio(left, right, rate)
+    local magsL, maxL, rmsL = spectrumOf(left, rate)
+    local magsR, maxR, rmsR = spectrumOf(right, rate)
+    if not magsL or not magsR then return end
+
+    updateVizGain(math.max(maxL, maxR))
+    state.rmsTarget = math.sqrt((rmsL * rmsL + rmsR * rmsR) * 0.5)
+
+    for i = 1, #magsL do
+        local l = perceptualBand(magsL[i])
+        local r = perceptualBand(magsR[i])
+        state.bandTargetsL[i] = (state.bandTargetsL[i] or 0) * 0.18 + l * 0.82
+        state.bandTargetsR[i] = (state.bandTargetsR[i] or 0) * 0.18 + r * 0.82
+        local combined = (l + r) * 0.5
+        state.bandTargets[i] = (state.bandTargets[i] or 0) * 0.18 + combined * 0.82
     end
 end
 
@@ -918,6 +968,16 @@ local function advanceVisualizer()
         shown = shown + (target - shown) * k
         if shown < 0.002 then shown = 0 end
         state.bands[i] = shown
+
+        local targetL = active and (state.bandTargetsL[i] or target) or 0
+        local shownL = state.bandsL[i] or 0
+        local tauL = targetL > shownL and 0.050 or 0.24
+        state.bandsL[i] = shownL + (targetL - shownL) * (1 - math.exp(-dt / tauL))
+
+        local targetR = active and (state.bandTargetsR[i] or target) or 0
+        local shownR = state.bandsR[i] or 0
+        local tauR = targetR > shownR and 0.050 or 0.24
+        state.bandsR[i] = shownR + (targetR - shownR) * (1 - math.exp(-dt / tauR))
 
         local peak = state.bandPeaks[i] or 0
         if shown >= peak then
@@ -1631,7 +1691,7 @@ local function audioLoop()
                                 end
 
                                 local analysisMono = stereo.mix(decodedL, decodedR)
-                                analyzeAudio(analysisMono, header.rate)
+                                analyzeStereoAudio(decodedL, decodedR, header.rate)
 
                                 if wantStereo then
                                     local leftPcm, rightPcm
@@ -1888,21 +1948,83 @@ local RAINBOW = {
     colors.orange, colors.yellow, colors.lime, colors.cyan,
 }
 
+
 local function drawVisualizer(c, x1, y1, x2, y2)
     if x2 - x1 < 20 or y2 - y1 < 9 then return end
 
     local cx = math.floor((x1 + x2) / 2)
     local cy = math.floor((y1 + y2) / 2)
+    local bands = #state.bands
+
+    if CONFIG.vizMode == "meter" then
+        -- Traditional bottom-up equalizer. This uses more of the available
+        -- vertical area and is especially readable from farther away.
+        local width = x2 - x1 + 1
+        local height = y2 - y1 + 1
+        local slot = math.max(1, math.floor(width / bands))
+        local barW = math.max(1, slot - 1)
+        local maxH = math.max(2, height - 2)
+
+        for b = 1, bands do
+            local bx = x1 + (b - 1) * slot
+            if bx > x2 then break end
+            local v = clamp(state.bands[b] or 0, 0, 1)
+            local h = math.floor(v * maxH + 0.5)
+            local col = RAINBOW[b] or colors.white
+            if h > 0 then
+                c:fill(bx, y2 - h + 1, math.min(x2, bx + barW - 1), y2, col, " ", col)
+            end
+
+            local peak = clamp(state.bandPeaks[b] or 0, 0, 1)
+            local py = y2 - math.floor(peak * maxH + 0.5)
+            if py >= y1 and py < y2 - h + 1 then
+                c:fill(bx, py, math.min(x2, bx + barW - 1), py, colors.white, " ", colors.white)
+            end
+        end
+
+        c:center(y1, "METER", x1, x2, colors.gray, colors.black)
+        return
+    end
+
+    if CONFIG.vizMode == "mirror" then
+        -- True stereo mode: LEFT grows from the center toward the left and
+        -- RIGHT grows toward the right. Each side is analyzed independently.
+        local maxWidth = math.max(8, math.floor((x2 - x1 - 4) / 2))
+        local maxHalf = math.max(1, math.floor((y2 - y1) * 0.42))
+        local spacing = math.max(1, math.floor(maxWidth / bands))
+
+        c:center(y1, "L   STEREO   R", x1, x2, colors.gray, colors.black)
+
+        for b = 1, bands do
+            local offset = math.min(maxWidth - 1, (b - 1) * spacing)
+            local lx = cx - 2 - offset
+            local rx = cx + 2 + offset
+            if lx < x1 or rx > x2 then break end
+
+            local lv = clamp(state.bandsL[b] or 0, 0, 1)
+            local rv = clamp(state.bandsR[b] or 0, 0, 1)
+            local lh = math.floor(lv * maxHalf + 0.5)
+            local rh = math.floor(rv * maxHalf + 0.5)
+            local col = RAINBOW[b] or colors.white
+
+            if lh > 0 then c:fill(lx, cy - lh, lx, cy + lh, col, " ", col) end
+            if rh > 0 then c:fill(rx, cy - rh, rx, cy + rh, col, " ", col) end
+        end
+
+        -- Center channel separator pulses gently with bass.
+        local pulse = clamp((state.vizBass or 0) * 1.5, 0, 1)
+        local centerHalf = 1 + math.floor(pulse * 3 + 0.5)
+        c:vline(cx, cy - centerHalf, cy + centerHalf, "|", colors.white, colors.black)
+        return
+    end
+
+    -- CLASSIC: the original ring/bar look, now with smoothing + peaks.
     local baseRx = math.max(5, math.floor((x2 - x1) * 0.36))
     local baseRy = math.max(3, math.floor((y2 - y1) * 0.40))
-
-    -- Bass drives the ring more than overall RMS, so kicks visibly "breathe"
-    -- without the entire display pumping on vocals.
     local pulse = clamp((state.vizBass or 0) * 1.35 + (state.rms or 0) * 0.45, 0, 1)
     local rx = math.min(math.floor((x2 - x1) / 2) - 1, baseRx + math.floor(pulse * 3 + 0.5))
     local ry = math.min(math.floor((y2 - y1) / 2) - 1, baseRy + math.floor(pulse * 1.5 + 0.5))
 
-    -- Dotted ellipse first; bars and peak markers then sit cleanly on top.
     for deg = 0, 354, 6 do
         local a = deg * math.pi / 180
         local x = math.floor(cx + math.cos(a) * rx + 0.5)
@@ -1910,7 +2032,6 @@ local function drawVisualizer(c, x1, y1, x2, y2)
         c:cell(x, y, ".", colors.white, colors.black)
     end
 
-    local bands = #state.bands
     local barSpan = math.max(18, math.min(rx * 2 - 6, bands * 2))
     local startX = cx - math.floor(barSpan / 2)
     local maxHalf = math.max(1, ry - 2)
@@ -1920,13 +2041,8 @@ local function drawVisualizer(c, x1, y1, x2, y2)
         local v = clamp(state.bands[b] or 0, 0, 1)
         local half = math.floor(v * maxHalf + 0.5)
         local col = RAINBOW[b] or colors.white
+        if half > 0 then c:fill(x, cy - half, x, cy + half, col, " ", col) end
 
-        if half > 0 then
-            c:fill(x, cy - half, x, cy + half, col, " ", col)
-        end
-
-        -- Short peak hold adds readable transients and makes the spectrum feel
-        -- like a real audio meter rather than a set of twitching columns.
         local peak = clamp(state.bandPeaks[b] or 0, 0, 1)
         local peakHalf = math.floor(peak * maxHalf + 0.5)
         if peakHalf > half and peakHalf > 0 then
@@ -1935,7 +2051,6 @@ local function drawVisualizer(c, x1, y1, x2, y2)
         end
     end
 
-    -- Central cross gets a tiny bass-reactive halo at strong transients.
     c:cell(cx, cy - 1, " ", colors.white, colors.white)
     c:cell(cx, cy, " ", colors.white, colors.white)
     c:cell(cx, cy + 1, " ", colors.white, colors.white)
@@ -1976,7 +2091,7 @@ local function drawQueue(c, x1, y1, x2, y2)
     if state.searchMode then
         heading = "SEARCH: " .. (state.search ~= "" and state.search or "type...")
     else
-        heading = "UP NEXT"
+        heading = "UP NEXT  " .. tostring(#state.library) .. " TRACKS"
     end
     c:text(x1 + 1, y1, heading, state.searchMode and colors.yellow or colors.white, colors.black, math.max(1, width - 9))
     c:text(x2 - 6, y1, "[U][D]", colors.lightGray, colors.black)
@@ -2013,11 +2128,14 @@ local function drawQueue(c, x1, y1, x2, y2)
             local title = tr.title
             if #title > titleRoom then title = title:sub(1, titleRoom - 1) .. ">" end
             local selected = itemIndex == state.currentIndex
+            local isNext = (not searchResults and r == 0)
             local bg = selected and colors.gray or colors.black
-            local fg = selected and colors.white or colors.lightGray
+            local fg = selected and colors.white or (isNext and colors.lightBlue or colors.lightGray)
             c:fill(x1, y, x2, y, bg)
-            c:text(x1 + 1, y, prefix .. title, fg, bg, width - #time - 2)
-            c:text(x2 - #time + 1, y, time, selected and colors.white or colors.gray, bg)
+            local marker = isNext and "> " or "  "
+            local linePrefix = marker .. prefix
+            c:text(x1, y, linePrefix .. title, fg, bg, width - #time - 1)
+            c:text(x2 - #time + 1, y, time, selected and colors.white or (isNext and colors.lightBlue or colors.gray), bg)
             addHitbox("track", x1, y, x2, y, itemIndex)
         end
     end
@@ -2040,6 +2158,7 @@ local function drawControls(c, x1, y, x2)
     if x + 10 <= x2 then x = drawButton(c, x, y, "SHUFFLE", state.shuffle, "shuffle") end
     if x + 9 <= x2 then x = drawButton(c, x, y, "LOOP:" .. state.loopMode:upper(), state.loopMode ~= "off", "loop") end
     if x + 12 <= x2 then x = drawButton(c, x, y, "AUDIO:" .. CONFIG.audioMode:upper(), CONFIG.audioMode ~= "mono", "audio_mode") end
+    if x + 13 <= x2 then x = drawButton(c, x, y, "VIZ:" .. CONFIG.vizMode:upper(), true, "viz_mode") end
 end
 
 local function drawProgress(c, x1, y, x2)
@@ -2108,9 +2227,9 @@ local function renderFrame()
 
     -- Header
     c:fill(1, 1, w, 1, colors.blue)
-    c:text(2, 1, "SQSH PLAYER", colors.white, colors.blue)
+    c:text(2, 1, "CC-MUSIC", colors.white, colors.blue)
     local mode = state.shuffle and "SHUFFLE" or "ORDER"
-    c:text(math.min(w, 14), 1, mode, state.shuffle and colors.lime or colors.lightGray, colors.blue)
+    c:text(math.min(w, 12), 1, mode, state.shuffle and colors.lime or colors.lightGray, colors.blue)
 
     local rateBadge = state.sourceRate > 0 and (tostring(math.floor(state.sourceRate / 1000 + 0.5)) .. "k") or "--"
     local audioBadge = state.activeAudioMode .. " " .. rateBadge
@@ -2169,10 +2288,20 @@ local function renderFrame()
     drawControls(c, leftX1, controlsY, leftX2)
     drawVolume(c, leftX1, h, leftX2)
 
-    if state.warning and h > 10 then
-        c:center(2, state.warning, leftX1, leftX2, colors.orange, colors.black)
-    elseif state.libraryCached and h > 10 then
-        c:center(2, "cached index", leftX1, leftX2, colors.orange, colors.black)
+    if h > 10 then
+        local subline
+        local subColor = colors.gray
+        if state.warning then
+            subline = state.warning
+            subColor = colors.orange
+        elseif state.libraryCached then
+            subline = "cached library"
+            subColor = colors.orange
+        elseif state.current then
+            subline = string.format("%s  |  %s  |  %s", fmtTime(state.current.duration), state.sourceFormat, CONFIG.vizMode:upper())
+            subColor = colors.lightGray
+        end
+        if subline then c:center(2, subline, leftX1, leftX2, subColor, colors.black) end
     end
 
     if mainW < w then drawQueue(c, dividerX + 1, 2, w, h) end
@@ -2218,6 +2347,7 @@ local function handleAction(id, data, touchX)
     elseif id == "shuffle" then toggleShuffle()
     elseif id == "loop" then cycleLoop()
     elseif id == "audio_mode" then cycleAudioMode()
+    elseif id == "viz_mode" then cycleVizMode()
     elseif id == "scroll_up" then scrollQueue(-1)
     elseif id == "scroll_down" then scrollQueue(1)
     elseif id == "track" then requestTrack(data, true)
@@ -2245,6 +2375,7 @@ local function broadcastStatus(targetId)
         speakers = #state.speakers,
         audio_mode = state.activeAudioMode,
         routing_mode = CONFIG.audioMode,
+        viz_mode = CONFIG.vizMode,
         source_rate = state.sourceRate,
         source_channels = state.sourceChannels,
         source_format = state.sourceFormat,
@@ -2273,6 +2404,7 @@ local function handleRemote(sender, msg)
     elseif op == "shuffle" then toggleShuffle(); broadcastStatus(sender)
     elseif op == "loop" then cycleLoop(); broadcastStatus(sender)
     elseif op == "audio_mode" then cycleAudioMode(); broadcastStatus(sender)
+    elseif op == "viz_mode" then cycleVizMode(); broadcastStatus(sender)
     elseif op == "volume" then setVolume(tonumber(msg.value) or state.volume); broadcastStatus(sender)
     elseif op == "play_index" then requestTrack(tonumber(msg.index), true); broadcastStatus(sender) end
 end
@@ -2311,6 +2443,7 @@ local function eventLoop()
             elseif a == keys.s and not state.searchMode then toggleShuffle()
             elseif a == keys.l and not state.searchMode then cycleLoop()
             elseif a == keys.a and not state.searchMode then cycleAudioMode()
+            elseif a == keys.v and not state.searchMode then cycleVizMode()
             elseif a == keys.f and not state.searchMode then state.searchMode = true; state.search = ""; state.queueScroll = 0
             elseif a == keys.escape and state.searchMode then state.searchMode = false; state.search = ""; state.queueScroll = 0
             elseif a == keys.enter and state.searchMode then
