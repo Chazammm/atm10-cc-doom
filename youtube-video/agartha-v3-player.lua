@@ -31,12 +31,11 @@ local function requestHandle(url)
     if not ok then return nil, err end
     while true do
         local ev, u, a, b = os.pullEvent()
-        if u == url then
-            if ev == "http_success" then return a
-            elseif ev == "http_failure" then
-                if type(b) == "table" and b.close then pcall(b.close) end
-                return nil, tostring(a)
-            end
+        if ev == "http_success" then
+            return a
+        elseif ev == "http_failure" then
+            if type(b) == "table" and b.close then pcall(b.close) end
+            return nil, tostring(a)
         end
     end
 end
