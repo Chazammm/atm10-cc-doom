@@ -44,6 +44,12 @@ local function closeHandle(h)
     if h and h.close then pcall(h.close) end
 end
 
+-- V4 always enables its monitor OSD/touch controls while playing. The V4
+-- quality-test used to disable the global setting and could leave it false
+-- after an interrupted test, which made the final player appear non-interactive.
+local previousTouchSetting = settings.get("musicvideo.touch_controls")
+settings.set("musicvideo.touch_controls", true)
+
 local saved = tonumber(settings.get("agartha.v4.resume_frame")) or 0
 saved = math.floor(saved / 10 + 0.5) * 10
 local currentFrame = (startMode == "resume") and math.max(0, math.min(index.total_frames - 1, saved)) or 0
@@ -73,6 +79,11 @@ local function cleanup()
     settings.unset("musicvideo.total_frames")
     settings.unset("musicvideo.resume_key")
     settings.unset("musicvideo.segment_base_frame")
+    if previousTouchSetting == nil then
+        settings.unset("musicvideo.touch_controls")
+    else
+        settings.set("musicvideo.touch_controls", previousTouchSetting)
+    end
     settings.save()
     for i = 0, 15 do
         local p = nativePalette[i]
