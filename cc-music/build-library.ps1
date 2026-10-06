@@ -102,6 +102,75 @@ function Ensure-FFmpeg {
     return @($ffmpegExe.FullName, $ffprobeExe.FullName)
 }
 
+
+function Test-Python([string]$Exe, [string[]]$Prefix = @()) {
+    if (-not $Exe) { return $false }
+    try {
+        & $Exe @Prefix -c "import sys; assert sys.version_info >= (3,9); print(sys.executable)" *> $null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
+function Ensure-Python {
+    # Ignore Microsoft's WindowsApps python.exe placeholder: Get-Command can
+    # resolve it even though no real Python interpreter is installed.
+    $pythonCmd = Get-Command python.exe -ErrorAction SilentlyContinue
+    if ($pythonCmd -and $pythonCmd.Source -notmatch "\\Microsoft\\WindowsApps\\") {
+        if (Test-Python $pythonCmd.Source) {
+            return [pscustomobject]@{ Exe = $pythonCmd.Source; Prefix = @() }
+        }
+    }
+
+    # The Python Launcher is common on Windows even when "python" is not on PATH.
+    $pyCmd = Get-Command py.exe -ErrorAction SilentlyContinue
+    if ($pyCmd) {
+        if (Test-Python $pyCmd.Source @("-3")) {
+            Write-Host ("Using Python launcher: " + $pyCmd.Source) -ForegroundColor Yellow
+            return [pscustomobject]@{ Exe = $pyCmd.Source; Prefix = @("-3") }
+        }
+    }
+
+    # Look in normal per-user Python installs.
+    $pythonRoots = @()
+    if ($env:LOCALAPPDATA) { $pythonRoots += (Join-Path $env:LOCALAPPDATA "Programs\Python") }
+    if ($env:ProgramFiles) { $pythonRoots += (Join-Path $env:ProgramFiles "Python*") }
+
+    $found = @()
+    foreach ($root in $pythonRoots) {
+        $found += @(Get-ChildItem -Path $root -Filter "python.exe" -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch "\\Microsoft\\WindowsApps\\" })
+    }
+    foreach ($item in ($found | Sort-Object LastWriteTime -Descending)) {
+        if (Test-Python $item.FullName) {
+            Write-Host ("Found Python outside PATH: " + $item.FullName) -ForegroundColor Yellow
+            return [pscustomobject]@{ Exe = $item.FullName; Prefix = @() }
+        }
+    }
+
+    # Last resort: install a real per-user Python from the WinGet community
+    # source. --source winget deliberately avoids the Microsoft Store source.
+    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+    if ($winget) {
+        Write-Host "Real Python was not found. Installing Python 3.13 for the current user..." -ForegroundColor Cyan
+        & $winget.Source install --id Python.Python.3.13 -e --source winget --scope user --accept-package-agreements --accept-source-agreements
+        if ($LASTEXITCODE -eq 0) {
+            $base = Join-Path $env:LOCALAPPDATA "Programs\Python"
+            $after = @(Get-ChildItem -Path $base -Filter "python.exe" -File -Recurse -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending)
+            foreach ($item in $after) {
+                if (Test-Python $item.FullName) {
+                    Write-Host ("Python ready: " + $item.FullName) -ForegroundColor Green
+                    return [pscustomobject]@{ Exe = $item.FullName; Prefix = @() }
+                }
+            }
+        }
+    }
+
+    throw "A real Python 3.9+ interpreter could not be found or installed. The WindowsApps python.exe entry is only a Store placeholder."
+}
+
 function Run([string]$Exe, [string[]]$Args) {
     & $Exe @Args
     if ($LASTEXITCODE -ne 0) {
@@ -131,7 +200,9 @@ if ($inputMode -eq "folder" -and -not (Test-Path $inputPath -PathType Container)
     throw "Source folder not found: $inputPath"
 }
 
-$python = Need-Cmd "python"
+$pythonInfo = Ensure-Python
+$python = $pythonInfo.Exe
+$pythonPrefix = @($pythonInfo.Prefix)
 $ff = Ensure-FFmpeg
 $ffmpeg = $ff[0]
 $ffprobe = $ff[1]
@@ -188,7 +259,7 @@ try {
 
     Write-Host ""
     Write-Host "Converting locally to 48 kHz SQSH2 / Profile A+..." -ForegroundColor Cyan
-    Run $python $args
+    Run $python (@($pythonPrefix) + $args)
 
     $files = @(Get-ChildItem -Path $out -Recurse -File -Filter "*.sqsh" | Sort-Object FullName)
     if ($files.Count -eq 0) { throw "Converter produced no .sqsh files." }
