@@ -15,4 +15,9 @@ if not ok or type(rel) ~= "table" then
 end
 print("V4 experiment: 60 seconds, 20 FPS, direct 2x3-cell optimisation.")
 print("Compare fine edges, faces, gradients and crawling/noise against V3.")
-shell.run("/playlist.lua", base, "agartha-v4-test-part", "2")
+local oldTouch = settings.get("musicvideo.touch_controls")
+settings.set("musicvideo.touch_controls", false)
+local okRun = shell.run("/playlist.lua", base, "agartha-v4-test-part", "2")
+if oldTouch == nil then settings.unset("musicvideo.touch_controls")
+else settings.set("musicvideo.touch_controls", oldTouch) end
+if not okRun then error("V4 test playback failed.") end
