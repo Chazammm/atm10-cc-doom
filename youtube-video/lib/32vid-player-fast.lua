@@ -38,10 +38,66 @@ local leftSpeaker = wrapSpeaker(leftName)
 local rightSpeaker = wrapSpeaker(rightName)
 local stereoActive = leftSpeaker and rightSpeaker and leftName ~= rightName
 
-local dfpwm = require("cc.audio.dfpwm")
-local normalDecoder = dfpwm.make_decoder()
-local leftNormalDecoder = dfpwm.make_decoder()
-local rightNormalDecoder = dfpwm.make_decoder()
+-- Embedded CC:Tweaked-compatible DFPWM decoder.
+-- Do not depend on require(): this file is also executed as a loaded chunk by
+-- the V3 controller, where shell package globals are not guaranteed to exist.
+local function makeDfpwmDecoder()
+    local floor, byte = math.floor, string.byte
+    local PREC = 10
+    local PREC_POW = 2 ^ PREC
+    local PREC_POW_HALF = 2 ^ (PREC - 1)
+    local STRENGTH_MIN = 2 ^ (PREC - 8 + 1)
+
+    local charge, strength, predictorPreviousBit = 0, 0, false
+    local lowPassCharge = 0
+    local previousCharge, previousBit = 0, false
+
+    local function predictor(currentBit)
+        local target = currentBit and 127 or -128
+        local nextCharge = charge + floor((strength * (target - charge) + PREC_POW_HALF) / PREC_POW)
+        if nextCharge == charge and nextCharge ~= target then
+            nextCharge = nextCharge + (currentBit and 1 or -1)
+        end
+
+        local z = currentBit == predictorPreviousBit and PREC_POW - 1 or 0
+        local nextStrength = strength
+        if nextStrength ~= z then
+            nextStrength = nextStrength + (currentBit == predictorPreviousBit and 1 or -1)
+        end
+        if nextStrength < STRENGTH_MIN then nextStrength = STRENGTH_MIN end
+
+        charge, strength, predictorPreviousBit = nextCharge, nextStrength, currentBit
+        return charge
+    end
+
+    return function(input)
+        local output, outputN = {}, 0
+        for i = 1, #input do
+            local inputByte = byte(input, i)
+            for _ = 1, 8 do
+                local currentBit = bit_band(inputByte, 1) ~= 0
+                local currentCharge = predictor(currentBit)
+
+                local antijerk = currentCharge
+                if currentBit ~= previousBit then
+                    antijerk = floor((currentCharge + previousCharge + 1) / 2)
+                end
+
+                previousCharge, previousBit = currentCharge, currentBit
+                lowPassCharge = lowPassCharge + floor(((antijerk - lowPassCharge) * 140 + 0x80) / 256)
+
+                outputN = outputN + 1
+                output[outputN] = lowPassCharge
+                inputByte = bit_rshift(inputByte, 1)
+            end
+        end
+        return output
+    end
+end
+
+local normalDecoder = makeDfpwmDecoder()
+local leftNormalDecoder = makeDfpwmDecoder()
+local rightNormalDecoder = makeDfpwmDecoder()
 local audioMode = settings.get("musicvideo.audio_mode") or "passthrough"
 local volume = tonumber(settings.get("musicvideo.volume")) or 1.0
 local leftVolume = tonumber(settings.get("musicvideo.left_volume")) or volume
