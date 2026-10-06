@@ -45,6 +45,7 @@ local function closeHandle(h)
 end
 
 local saved = tonumber(settings.get("agartha.v4.resume_frame")) or 0
+saved = math.floor(saved / 10 + 0.5) * 10
 local currentFrame = (startMode == "resume") and math.max(0, math.min(index.total_frames - 1, saved)) or 0
 
 settings.set("musicvideo.session_active", true)
@@ -138,7 +139,8 @@ local ok, err = xpcall(function()
             settings.save()
         elseif control == "stop" then
             closeHandle(nextHandle)
-            currentFrame = math.max(0, math.min(index.total_frames - 1, reported))
+            currentFrame = math.floor(reported / 10 + 0.5) * 10
+            currentFrame = math.max(0, math.min(index.total_frames - 1, currentFrame))
             settings.set("agartha.v4.resume_frame", currentFrame)
             settings.save()
             finished = true
