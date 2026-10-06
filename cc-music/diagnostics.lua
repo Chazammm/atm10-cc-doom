@@ -1,7 +1,7 @@
 -- CC-Music 3.0 diagnostics / setup report.
 local function yn(v) return v and "YES" or "NO" end
 
-print("CC-Music 3.5.2 diagnostics")
+print("CC-Music 3.6.0 diagnostics")
 print("------------------------")
 
 local monitor, monitorName = peripheral.find("monitor", function(name) monitorName = name; return true end)
@@ -73,3 +73,14 @@ if fs.exists("/ccmusic/session.json") then
 else
     print("Resume session: not created yet")
 end
+
+
+print("")
+local uiFps = settings.get("ccmusic.ui_fps") or 12
+local vizSlice = settings.get("ccmusic.viz_slice_bytes") or 1024
+local vizMode = settings.get("ccmusic.viz_mode") or "classic"
+print("Performance:")
+print("  UI FPS          : " .. tostring(uiFps))
+print("  Visualizer slice: " .. tostring(vizSlice) .. " B")
+print("  Visualizer mode : " .. tostring(vizMode):upper())
+print("  Auto SAFE mode  : enabled in player")
