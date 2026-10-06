@@ -756,14 +756,17 @@ end
 
 local function chooseNext(manual)
     if #state.order == 0 then return end
-    if not manual and state.loopMode == "one" then
-        restartCurrent()
-        return
-    end
 
+    -- Explicit Play Next items take precedence over repeat-one. This matches
+    -- normal media-player queue semantics: the queued song really is next.
     local queued = popQueuedTrack()
     if queued then
         requestTrack(queued, true)
+        return
+    end
+
+    if not manual and state.loopMode == "one" then
+        restartCurrent()
         return
     end
 
