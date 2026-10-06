@@ -87,6 +87,11 @@ if nstreams ~= 1 then file.close() error("Fast player requires combined-stream 3
 if bit_band(flags, 3) ~= 1 then file.close() error("Fast player currently requires ANS video compression") end
 local _, nframes, ctype = ("<IIB"):unpack(file.read(9))
 if ctype ~= 0x0C then file.close() error("Fast player requires a combined stream") end
+
+-- V3 marks combined files which actually contain AudioLeft/AudioRight chunks
+-- with a private high flag. Without this flag, configured stereo speakers must
+-- not disable ordinary mono V1/V2 audio.
+local hasStereoAudio = bit32.btest(flags, 0x8000)
 if bit32.btest(flags, 0x20) then file.close() error("Fast player expects one connected monitor surface, not 32vid multi-monitor mode") end
 
 local tw, th = term.getSize()
@@ -399,7 +404,7 @@ for _ = 1, nframes do
         -- Standard mono audio. V3 keeps this as a fallback when stereo has not
         -- been configured, so the file still works with one ordinary speaker.
         local audio = file.read(size)
-        if speaker and not muteAudio and not stereoActive then
+        if speaker and not muteAudio and (not hasStereoAudio or not stereoActive) then
             local samples = decodeAudio(audio, normalDecoder)
             playSamplesOn(speaker, speakerName, samples, volume)
             if not mediaStart then
@@ -411,7 +416,7 @@ for _ = 1, nframes do
     elseif frameType == 2 then
         -- V3 left-channel DFPWM chunk.
         local audio = file.read(size)
-        if stereoActive and not muteAudio then
+        if hasStereoAudio and stereoActive and not muteAudio then
             local samples = decodeAudio(audio, leftNormalDecoder)
             playSamplesOn(leftSpeaker, leftName, samples, leftVolume)
             if not mediaStart then
@@ -423,7 +428,7 @@ for _ = 1, nframes do
     elseif frameType == 3 then
         -- V3 right-channel DFPWM chunk.
         local audio = file.read(size)
-        if stereoActive and not muteAudio then
+        if hasStereoAudio and stereoActive and not muteAudio then
             local samples = decodeAudio(audio, rightNormalDecoder)
             playSamplesOn(rightSpeaker, rightName, samples, rightVolume)
             if not mediaStart then
