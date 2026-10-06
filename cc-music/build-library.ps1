@@ -171,10 +171,10 @@ function Ensure-Python {
     throw "A real Python 3.9+ interpreter could not be found or installed. The WindowsApps python.exe entry is only a Store placeholder."
 }
 
-function Run([string]$Exe, [string[]]$Args) {
-    & $Exe @Args
+function Run([string]$Exe, [string[]]$CommandArgs) {
+    & $Exe @CommandArgs
     if ($LASTEXITCODE -ne 0) {
-        throw ("Command failed ({0}): {1} {2}" -f $LASTEXITCODE, $Exe, ($Args -join " "))
+        throw ("Command failed ({0}): {1} {2}" -f $LASTEXITCODE, $Exe, ($CommandArgs -join " "))
     }
 }
 
@@ -255,12 +255,14 @@ try {
     Write-Host "Downloading current Profile A+ converter..." -ForegroundColor Cyan
     Invoke-WebRequest -UseBasicParsing -Uri $raw -OutFile $converter
 
-    $args = @($converter, $src, "--output", $out, "--overwrite")
-    if ($Normalize) { $args += "--normalize" }
+    $converterArgs = @($converter, $src, "--output", $out, "--overwrite")
+    if ($Normalize) { $converterArgs += "--normalize" }
 
     Write-Host ""
     Write-Host "Converting locally to 48 kHz SQSH2 / Profile A+..." -ForegroundColor Cyan
-    Run $python (@($pythonPrefix) + $args)
+    $pythonArgs = @($pythonPrefix) + @($converterArgs)
+    Write-Host ("Python command: {0} {1}" -f $python, ($pythonArgs -join " ")) -ForegroundColor DarkGray
+    Run $python $pythonArgs
 
     $files = @(Get-ChildItem -Path $out -Recurse -File -Filter "*.sqsh" | Sort-Object FullName)
     if ($files.Count -eq 0) { throw "Converter produced no .sqsh files." }
