@@ -2,7 +2,7 @@
 -- Designed for large Advanced Monitor walls and SQSH1/SQSH2 (DFPWM) audio files.
 -- Repository default: https://github.com/Di33le/CC-Music
 
-local VERSION = "3.0.0"
+local VERSION = "3.1.0"
 local PROTOCOL = "ccmusic.v2"
 local INDEX_CACHE = "/.ccmusic-index.json"
 
@@ -36,6 +36,8 @@ defineSetting("ccmusic.hq_resampler", true, "boolean", "Use higher-quality 24 kH
 defineSetting("ccmusic.legacy_resampler", "sinc8", "string", "24 kHz upsampler: sinc8, cubic, or linear")
 defineSetting("ccmusic.ui_fps", 8, "number", "Maximum UI refresh rate")
 defineSetting("ccmusic.start_track", "Sundress", "string", "Preferred title substring to play first")
+defineSetting("ccmusic.library_repo", "Chazammm/atm10-cc-doom", "string", "Repository containing the CC-Music release library")
+defineSetting("ccmusic.library_tag", "cc-music-library-v1", "string", "GitHub release tag containing library.json and SQSH assets")
 defineSetting("ccmusic.audio_mode", "auto", "string", "Audio routing: auto, stereo, or mono")
 defineSetting("ccmusic.left_speaker", "", "string", "Peripheral name for the left stereo speaker")
 defineSetting("ccmusic.right_speaker", "", "string", "Peripheral name for the right stereo speaker")
@@ -62,6 +64,8 @@ local CONFIG = {
     legacyResampler = tostring(getSetting("ccmusic.legacy_resampler", "sinc8")):lower(),
     uiFps = tonumber(getSetting("ccmusic.ui_fps", 8)) or 8,
     startTrack = tostring(getSetting("ccmusic.start_track", "Sundress")),
+    libraryRepo = tostring(getSetting("ccmusic.library_repo", "Chazammm/atm10-cc-doom")),
+    libraryTag = tostring(getSetting("ccmusic.library_tag", "cc-music-library-v1")),
     audioMode = tostring(getSetting("ccmusic.audio_mode", "auto")):lower(),
     leftSpeaker = tostring(getSetting("ccmusic.left_speaker", "")),
     rightSpeaker = tostring(getSetting("ccmusic.right_speaker", "")),
@@ -156,18 +160,23 @@ local function urlEncode(s)
     end))
 end
 
-local function rawUrl(filename)
-    local owner, repo = CONFIG.repo:match("^([^/]+)/(.+)$")
-    if not owner then return nil end
-    return "https://raw.githubusercontent.com/" .. urlEncode(owner) .. "/" .. urlEncode(repo)
-        .. "/" .. urlEncode(CONFIG.branch) .. "/" .. urlEncode(filename)
+local function releaseBaseUrl()
+    return "https://github.com/" .. CONFIG.libraryRepo .. "/releases/download/"
+        .. urlEncode(CONFIG.libraryTag) .. "/"
 end
 
-local function apiContentsUrl()
-    local owner, repo = CONFIG.repo:match("^([^/]+)/(.+)$")
-    if not owner then return nil end
-    return "https://api.github.com/repos/" .. urlEncode(owner) .. "/" .. urlEncode(repo)
-        .. "/contents/?ref=" .. urlEncode(CONFIG.branch)
+local function releaseTagApiUrl()
+    return "https://api.github.com/repos/" .. CONFIG.libraryRepo
+        .. "/releases/tags/" .. urlEncode(CONFIG.libraryTag)
+end
+
+local function releaseAssetsApiUrl(releaseId)
+    return "https://api.github.com/repos/" .. CONFIG.libraryRepo
+        .. "/releases/" .. tostring(releaseId) .. "/assets?per_page=100&page=1"
+end
+
+local function manifestUrl()
+    return releaseBaseUrl() .. "library.json"
 end
 
 local function safeClose(handle)
@@ -194,6 +203,7 @@ local function httpGet(url, binary)
         ["User-Agent"] = "CC-Music/" .. VERSION,
         ["Accept"] = "application/vnd.github+json",
         ["X-GitHub-Api-Version"] = "2022-11-28",
+        ["Cache-Control"] = "no-cache",
     }
     local ok, handle, err = pcall(http.get, url, headers, binary == true)
     if not ok then return nil, tostring(handle) end
@@ -214,69 +224,149 @@ end
 
 local function writeCache(tracks)
     if not fs then return end
-    local slim = { version = 1, repo = CONFIG.repo, branch = CONFIG.branch, tracks = {} }
-    for i = 1, #tracks do
-        slim.tracks[#slim.tracks + 1] = { name = tracks[i].name, size = tracks[i].size }
-    end
+    local slim = {
+        version = 2,
+        repo = CONFIG.libraryRepo,
+        tag = CONFIG.libraryTag,
+        tracks = tracks,
+    }
     local raw = jsonEncode(slim)
     if not raw then return end
     local h = fs.open(INDEX_CACHE, "w")
     if h then h.write(raw); h.close() end
 end
 
-local function normalizeTracks(entries)
-    local tracks = {}
-    if type(entries) ~= "table" then return tracks end
-    for _, item in ipairs(entries) do
-        local name = item.name
-        if type(name) == "string" and name:lower():match("%.sqsh$") then
-            local size = tonumber(item.size) or 0
-            local track = {
-                name = name,
-                title = cleanTitle(name),
-                size = size,
-                url = rawUrl(name),
-                rate = 24000,
-                audioBytes = nil,
-                lyricsBytes = nil,
-            }
-            -- Excellent estimate before the exact SQSH header has been read.
-            track.duration = size > 0 and (size * 8 / 24000) or 0
-            tracks[#tracks + 1] = track
+local function canonicalAssetKey(name)
+    name = tostring(name or ""):lower()
+    name = name:gsub("%.sqsh$", "")
+    name = name:gsub("%.part%d%d%d$", "")
+    return (name:gsub("[^%w]", ""))
+end
+
+local function displayTitleFromAsset(stem)
+    local s = tostring(stem or "")
+    s = s:gsub("%.-%.", " - ")
+    s = s:gsub("%.", " ")
+    s = s:gsub("_", " ")
+    s = s:gsub("%s+", " ")
+    return trim(s)
+end
+
+local function fetchJson(url)
+    local h, err = httpGet(url, false)
+    if not h then return nil, err end
+    local body = h.readAll()
+    safeClose(h)
+    local data = jsonDecode(body)
+    if type(data) ~= "table" then return nil, "Invalid JSON from " .. tostring(url) end
+    return data
+end
+
+local function loadReleaseLibrary()
+    -- Manifest supplies human-friendly titles and exact durations. Asset API
+    -- supplies the real GitHub-normalized filenames/URLs (GitHub turns spaces
+    -- into dots on release assets), so playback never depends on guessed URLs.
+    local manifest = nil
+    do
+        local data = fetchJson(manifestUrl())
+        if type(data) == "table" and type(data.tracks) == "table" then manifest = data end
+    end
+
+    local release, err = fetchJson(releaseTagApiUrl())
+    if not release or not release.id then return nil, err or "Could not resolve music release" end
+
+    local assets, assetsErr = fetchJson(releaseAssetsApiUrl(release.id))
+    if not assets then return nil, assetsErr or "Could not list music release assets" end
+
+    local manifestByKey = {}
+    if manifest then
+        for _, item in ipairs(manifest.tracks) do
+            if type(item) == "table" and item.name then
+                manifestByKey[canonicalAssetKey(item.name)] = item
+            end
         end
     end
-    table.sort(tracks, function(a, b)
-        return a.title:lower() < b.title:lower()
-    end)
-    return tracks
+
+    local groups = {}
+    for _, asset in ipairs(assets) do
+        if type(asset) == "table" and asset.state == "uploaded"
+            and type(asset.name) == "string" and asset.name:lower():match("%.sqsh$") then
+            local stem, partNo = asset.name:match("^(.*)%.part(%d%d%d)%.sqsh$")
+            if not stem then
+                stem = asset.name:gsub("%.sqsh$", "")
+                partNo = "001"
+            end
+            local key = canonicalAssetKey(stem)
+            local group = groups[key]
+            if not group then
+                group = { stem = stem, items = {} }
+                groups[key] = group
+            end
+            group.items[#group.items + 1] = {
+                name = asset.name,
+                size = tonumber(asset.size) or 0,
+                url = asset.browser_download_url,
+                partNo = tonumber(partNo) or 1,
+            }
+        end
+    end
+
+    local tracks = {}
+    for key, group in pairs(groups) do
+        table.sort(group.items, function(a, b) return a.partNo < b.partNo end)
+        local meta = manifestByKey[key]
+        local totalSize = 0
+        for _, p in ipairs(group.items) do totalSize = totalSize + (p.size or 0) end
+
+        local track = {
+            name = meta and meta.name or (group.stem .. ".sqsh"),
+            title = meta and meta.title or displayTitleFromAsset(group.stem),
+            size = totalSize,
+            rate = tonumber(meta and meta.rate) or 48000,
+            channels = tonumber(meta and meta.channels) or 2,
+            format = meta and meta.format or "SQSH2",
+            duration = tonumber(meta and meta.duration) or 0,
+            audioBytes = nil,
+            lyricsBytes = nil,
+        }
+
+        if track.duration <= 0 and totalSize > 0 then
+            local ch = math.max(1, track.channels or 2)
+            track.duration = totalSize * 8 / (track.rate * ch)
+        end
+
+        if #group.items == 1 then
+            track.url = group.items[1].url
+        else
+            track.segmented = true
+            track.parts = {}
+            for i, p in ipairs(group.items) do
+                track.parts[i] = { name = p.name, size = p.size, url = p.url }
+            end
+        end
+
+        tracks[#tracks + 1] = track
+    end
+
+    table.sort(tracks, function(a, b) return a.title:lower() < b.title:lower() end)
+    if #tracks == 0 then return nil, "Music release contains no uploaded SQSH assets" end
+    return tracks, manifest and nil or "library.json unavailable; using release metadata"
 end
 
 local function loadLibrary()
-    local url = apiContentsUrl()
-    if url then
-        local h, err = httpGet(url, false)
-        if h then
-            local body = h.readAll()
-            safeClose(h)
-            local data = jsonDecode(body)
-            if type(data) == "table" then
-                local tracks = normalizeTracks(data)
-                if #tracks > 0 then
-                    writeCache(tracks)
-                    return tracks, nil, false
-                end
-            end
-            err = "GitHub returned an invalid/empty track index"
-        end
-
-        local cache = readCache()
-        if cache and cache.repo == CONFIG.repo and cache.branch == CONFIG.branch then
-            local tracks = normalizeTracks(cache.tracks)
-            if #tracks > 0 then return tracks, err or "Using cached library", true end
-        end
-        return {}, err or "Could not load GitHub library", false
+    local tracks, warning = loadReleaseLibrary()
+    if tracks and #tracks > 0 then
+        writeCache(tracks)
+        return tracks, warning, false
     end
-    return {}, "Invalid ccmusic.repo (expected owner/repository)", false
+
+    local cache = readCache()
+    if cache and cache.version == 2 and cache.repo == CONFIG.libraryRepo
+        and cache.tag == CONFIG.libraryTag and type(cache.tracks) == "table" and #cache.tracks > 0 then
+        return cache.tracks, warning or "Using cached music library", true
+    end
+
+    return {}, warning or "Could not load CC-Music release library", false
 end
 
 -- ---------------------------------------------------------------------------
@@ -1277,11 +1367,11 @@ playPcmBlock = function(pcm, generation)
     return generation == state.generation and state.running
 end
 
-local function openTrack(track)
+local function openAudioUrl(url)
     local lastErr
     for attempt = 1, 3 do
         if not state.running then return nil, "Stopped" end
-        local h, err = httpGet(track.url, true)
+        local h, err = httpGet(url, true)
         if h then return h end
         lastErr = err
         state.error = "Stream retry " .. attempt .. "/3: " .. tostring(err)
