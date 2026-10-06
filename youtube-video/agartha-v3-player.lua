@@ -71,6 +71,7 @@ local function cleanup()
     for i = 0, 15 do monitor.setPaletteColor(2 ^ i, monitor.nativePaletteColor(2 ^ i)) end
     monitor.setBackgroundColor(colors.black)
     monitor.setTextColor(colors.white)
+    monitor.clear()
     term.redirect(native)
 end
 
