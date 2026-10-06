@@ -172,35 +172,106 @@ def lyric_bytes(src: Path) -> bytes:
     return path.read_bytes() if path.exists() else b""
 
 
-def write_sqsh1(dst: Path, audio: bytes, lyrics: bytes) -> None:
-    header = (
+
+def _part_path(dst: Path, index: int) -> Path:
+    return dst.with_name(f"{dst.stem}.part{index:03d}{dst.suffix}")
+
+
+def _sqsh1_header(audio_bytes: int, lyric_bytes: int) -> bytes:
+    return (
         b"SQSH1\n"
         b"rate=48000\n"
-        + f"lyrics={len(lyrics)}\n".encode("ascii")
-        + f"audio={len(audio)}\n\n".encode("ascii")
+        + f"lyrics={lyric_bytes}\n".encode("ascii")
+        + f"audio={audio_bytes}\n\n".encode("ascii")
     )
-    dst.write_bytes(header + lyrics + audio)
 
 
-def write_sqsh2(dst: Path, left: bytes, right: bytes, lyrics: bytes, block: int) -> None:
-    if len(left) != len(right):
-        raise RuntimeError(f"Stereo channel lengths differ: L={len(left)} R={len(right)}")
-
-    header = (
+def _sqsh2_header(audio_bytes: int, lyric_bytes: int, block: int) -> bytes:
+    return (
         b"SQSH2\n"
         b"rate=48000\n"
         b"channels=2\n"
-        + f"lyrics={len(lyrics)}\n".encode("ascii")
-        + f"audio={len(left)}\n".encode("ascii")
+        + f"lyrics={lyric_bytes}\n".encode("ascii")
+        + f"audio={audio_bytes}\n".encode("ascii")
         + f"block={block}\n\n".encode("ascii")
     )
 
-    with dst.open("wb") as out:
-        out.write(header)
-        out.write(lyrics)
-        for off in range(0, len(left), block):
-            out.write(left[off:off + block])
-            out.write(right[off:off + block])
+
+def write_sqsh1(dst: Path, audio: bytes, lyrics: bytes, max_file_bytes: int = 0) -> list[Path]:
+    header = _sqsh1_header(len(audio), len(lyrics))
+    if max_file_bytes <= 0 or len(header) + len(lyrics) + len(audio) <= max_file_bytes:
+        dst.write_bytes(header + lyrics + audio)
+        return [dst]
+
+    # Keep non-final boundaries aligned to a large DFPWM block. The player can
+    # continue decoder state across parts, so this is primarily for clean I/O.
+    probe = len(_sqsh1_header(10**12, len(lyrics))) + len(lyrics)
+    payload_cap = max_file_bytes - probe
+    payload_cap = (payload_cap // 16384) * 16384
+    if payload_cap < 16384:
+        raise RuntimeError("HTTP part target is too small for SQSH1")
+
+    paths: list[Path] = []
+    for part_no, off in enumerate(range(0, len(audio), payload_cap), 1):
+        chunk = audio[off:off + payload_cap]
+        path = _part_path(dst, part_no)
+        path.write_bytes(_sqsh1_header(len(chunk), len(lyrics)) + lyrics + chunk)
+        paths.append(path)
+    return paths
+
+
+def write_sqsh2(
+    dst: Path,
+    left: bytes,
+    right: bytes,
+    lyrics: bytes,
+    block: int,
+    max_file_bytes: int = 0,
+) -> list[Path]:
+    if len(left) != len(right):
+        raise RuntimeError(f"Stereo channel lengths differ: L={len(left)} R={len(right)}")
+
+    header = _sqsh2_header(len(left), len(lyrics), block)
+    full_size = len(header) + len(lyrics) + len(left) + len(right)
+
+    if max_file_bytes <= 0 or full_size <= max_file_bytes:
+        with dst.open("wb") as out:
+            out.write(header)
+            out.write(lyrics)
+            for off in range(0, len(left), block):
+                out.write(left[off:off + block])
+                out.write(right[off:off + block])
+        return [dst]
+
+    # Pick a per-channel payload that leaves header/lyrics room and is aligned
+    # to SQSH2's interleave block. This keeps every generated asset below the
+    # CC:Tweaked HTTP ceiling without altering or shortening the track.
+    probe = len(_sqsh2_header(10**12, len(lyrics), block)) + len(lyrics)
+    per_channel_cap = (max_file_bytes - probe) // 2
+    per_channel_cap = (per_channel_cap // block) * block
+    if per_channel_cap < block:
+        raise RuntimeError("HTTP part target is too small for one SQSH2 block")
+
+    paths: list[Path] = []
+    part_no = 1
+    for off in range(0, len(left), per_channel_cap):
+        lpart = left[off:off + per_channel_cap]
+        rpart = right[off:off + per_channel_cap]
+        path = _part_path(dst, part_no)
+        with path.open("wb") as out:
+            out.write(_sqsh2_header(len(lpart), len(lyrics), block))
+            out.write(lyrics)
+            for sub in range(0, len(lpart), block):
+                out.write(lpart[sub:sub + block])
+                out.write(rpart[sub:sub + block])
+        if path.stat().st_size > max_file_bytes:
+            raise RuntimeError(
+                f"Generated HTTP part is still too large: {path.name} "
+                f"({path.stat().st_size / 1024 / 1024:.2f} MiB)"
+            )
+        paths.append(path)
+        part_no += 1
+    return paths
 
 
 def convert_one(
@@ -212,7 +283,8 @@ def convert_one(
     force_mono: bool,
     force_stereo: bool,
     block: int,
-) -> tuple[str, int, int]:
+    max_file_bytes: int,
+) -> tuple[str, int, int, list[Path]]:
     dst.parent.mkdir(parents=True, exist_ok=True)
     channels = probe_channels(ffprobe, src)
     stereo = (channels >= 2 and not force_mono) or force_stereo
@@ -224,14 +296,14 @@ def convert_one(
             left_path, right_path = td_path / "left.dfpwm", td_path / "right.dfpwm"
             encode_stereo(ffmpeg, src, left_path, right_path, normalize)
             left, right = left_path.read_bytes(), right_path.read_bytes()
-            write_sqsh2(dst, left, right, lyrics, block)
-            return "SQSH2 stereo", len(left), len(lyrics)
+            paths = write_sqsh2(dst, left, right, lyrics, block, max_file_bytes)
+            return "SQSH2 stereo", len(left), len(lyrics), paths
 
         raw = td_path / "mono.dfpwm"
         encode_mono(ffmpeg, src, raw, normalize)
         audio = raw.read_bytes()
-        write_sqsh1(dst, audio, lyrics)
-        return "SQSH1 mono", len(audio), len(lyrics)
+        paths = write_sqsh1(dst, audio, lyrics, max_file_bytes)
+        return "SQSH1 mono", len(audio), len(lyrics), paths
 
 
 def main() -> int:
@@ -246,6 +318,7 @@ def main() -> int:
     group.add_argument("--mono", action="store_true", help="Force all sources to SQSH1 mono")
     group.add_argument("--force-stereo", action="store_true", help="Write SQSH2 even for mono sources")
     ap.add_argument("--block", type=int, default=8192, help="SQSH2 bytes per channel block (1024..16384)")
+    ap.add_argument("--max-file-bytes", type=int, default=0, help="Auto-split generated SQSH files below this size; 0 disables")
     args = ap.parse_args()
 
     if not args.input.is_dir():
@@ -276,15 +349,16 @@ def main() -> int:
 
         print(f"[{idx:>3}/{len(sources)}] ENCODE {src.name}")
         try:
-            mode, bytes_per_channel, lyrics = convert_one(
+            mode, bytes_per_channel, lyrics, paths = convert_one(
                 ffmpeg, ffprobe, src, dst, args.normalize,
-                args.mono, args.force_stereo, args.block,
+                args.mono, args.force_stereo, args.block, args.max_file_bytes,
             )
             seconds = bytes_per_channel * 8 / 48000
             print(
                 f"              OK -> {dst} | {mode} | {seconds:.1f}s | "
                 f"{bytes_per_channel/1024:.1f} KiB/channel"
                 + (f" | {lyrics} B lyrics" if lyrics else "")
+                + (f" | {len(paths)} HTTP parts" if len(paths) > 1 else "")
             )
             ok += 1
         except Exception as exc:
