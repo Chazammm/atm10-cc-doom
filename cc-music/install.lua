@@ -1,9 +1,10 @@
 -- CC-Music one-line installer for CC:Tweaked / ATM10 8.2
 local BASE = "https://raw.githubusercontent.com/Chazammm/atm10-cc-doom/cc-music-player/cc-music/"
+local CACHE = "?v=3.0.0"
 local DIR = "/ccmusic"
 
 local function get(url)
-  local h, err = http.get(url, nil, true)
+  local h, err = http.get(url .. CACHE, { ["Cache-Control"] = "no-cache" }, true)
   if not h then error("Download failed: " .. tostring(err), 0) end
   local data = h.readAll()
   h.close()
@@ -16,6 +17,7 @@ if not fs.exists(DIR) then fs.makeDir(DIR) end
 local files = {
   {"player.lua", DIR .. "/player.lua"},
   {"remote.lua", DIR .. "/remote.lua"},
+  {"stereosetup.lua", DIR .. "/stereosetup.lua"},
   {"README.md", DIR .. "/README.md"},
 }
 
@@ -42,8 +44,22 @@ local f = assert(fs.open("/music.lua", "w"))
 f.write(launcher)
 f.close()
 
+local stereoLauncher = [[
+local path = "/ccmusic/stereosetup.lua"
+if not fs.exists(path) then
+  printError("CC-Music stereo setup is not installed. Run the installer again.")
+  return
+end
+shell.run(path, ...)
+]]
+local sf = assert(fs.open("/music-stereo.lua", "w"))
+sf.write(stereoLauncher)
+sf.close()
+
 print("")
-print("CC-Music installed.")
+print("CC-Music 3.0 installed.")
 print("Run: music")
+print("Stereo setup: music-stereo")
 print("Remote: /ccmusic/remote.lua")
+print("Optimal monitor: 8 wide x 6 high at text scale 0.5 (164x81 cells)")
 print("Tracks are streamed from Di33le/CC-Music on GitHub.")
