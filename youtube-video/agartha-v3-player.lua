@@ -48,6 +48,7 @@ local saved = tonumber(settings.get("agartha.v3.resume_frame")) or 0
 local currentFrame = (startMode == "resume") and math.max(0, math.min(index.total_frames - 1, saved)) or 0
 
 settings.set("musicvideo.session_active", true)
+settings.set("musicvideo.resume_key", "agartha.v3.resume_frame")
 settings.set("musicvideo.total_frames", index.total_frames)
 settings.set("musicvideo.session_frame", currentFrame)
 settings.set("musicvideo.session_start", os.epoch("utc") - currentFrame * (1000 / index.fps))
@@ -71,6 +72,7 @@ local function cleanup()
     closeHandle(currentHandle)
     settings.unset("musicvideo.session_active")
     settings.unset("musicvideo.total_frames")
+    settings.unset("musicvideo.resume_key")
     settings.unset("musicvideo.segment_base_frame")
     settings.save()
 
