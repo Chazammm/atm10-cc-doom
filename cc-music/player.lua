@@ -2,7 +2,7 @@
 -- Designed for large Advanced Monitor walls and SQSH1/SQSH2 (DFPWM) audio files.
 -- Repository default: https://github.com/Di33le/CC-Music
 
-local VERSION = "3.5.1"
+local VERSION = "3.5.2"
 local PROTOCOL = "ccmusic.v2"
 local INDEX_CACHE = "/.ccmusic-index.json"
 
@@ -586,6 +586,7 @@ local function seekRelative(delta)
 end
 
 local FAVORITES_FILE = "/ccmusic/favorites.json"
+local SESSION_FILE = "/ccmusic/session.json"
 
 local function loadFavorites()
     if not fs or not fs.exists(FAVORITES_FILE) then return {} end
@@ -635,13 +636,66 @@ local function favoriteCount()
     return n
 end
 
+local function loadResumeSession()
+    if not fs or not fs.exists(SESSION_FILE) then return nil end
+    local h = fs.open(SESSION_FILE, "r")
+    if not h then return nil end
+    local raw = h.readAll()
+    h.close()
+
+    local data = jsonDecode(raw)
+    if type(data) ~= "table" then return nil end
+    if type(data.track) ~= "string" or data.track == "" then return nil end
+
+    return {
+        track = data.track,
+        position = math.max(0, tonumber(data.position) or 0),
+        savedAt = tonumber(data.saved_at) or 0,
+    }
+end
+
 local function saveResume(force)
     if not CONFIG.resumeEnabled or not state.current then return end
     local now = nowMs()
-    if not force and now - (state.lastResumeSaveMs or 0) < 5000 then return end
+    if not force and now - (state.lastResumeSaveMs or 0) < 4000 then return end
     state.lastResumeSaveMs = now
-    saveSetting("ccmusic.resume_track", state.current.name or "")
-    saveSetting("ccmusic.resume_position", currentPositionSeconds())
+
+    local position = math.max(0, currentPositionSeconds())
+    local trackName = state.current.name or ""
+    if trackName == "" then return end
+
+    -- Primary persistence: an explicit player-owned session file. This avoids
+    -- depending on the current working directory used by settings.save().
+    if fs then
+        local raw = jsonEncode({
+            version = 1,
+            track = trackName,
+            position = position,
+            saved_at = now,
+        })
+        if raw then
+            local tmp = SESSION_FILE .. ".tmp"
+            local h = fs.open(tmp, "w")
+            if h then
+                h.write(raw)
+                h.close()
+                if fs.exists(SESSION_FILE) then pcall(fs.delete, SESSION_FILE) end
+                local okMove = pcall(fs.move, tmp, SESSION_FILE)
+                if not okMove and fs.exists(tmp) then
+                    local src = fs.open(tmp, "r")
+                    local dst = fs.open(SESSION_FILE, "w")
+                    if src and dst then dst.write(src.readAll()) end
+                    if src then src.close() end
+                    if dst then dst.close() end
+                    pcall(fs.delete, tmp)
+                end
+            end
+        end
+    end
+
+    -- Keep the old settings keys as a backwards-compatible fallback.
+    saveSetting("ccmusic.resume_track", trackName)
+    saveSetting("ccmusic.resume_position", position)
 end
 
 local function toggleResume()
@@ -2569,7 +2623,7 @@ local function renderFrame()
             subline = "cached library"
             subColor = colors.orange
         elseif state.current then
-            subline = string.format("%s / %s  |  %s  |  %s", fmtTime(currentPositionSeconds()), fmtTime(state.current.duration), state.sourceFormat, CONFIG.vizMode:upper())
+            subline = string.format("%s / %s  |  %s  |  %s%s", fmtTime(currentPositionSeconds()), fmtTime(state.current.duration), state.sourceFormat, CONFIG.vizMode:upper(), CONFIG.resumeEnabled and "  |  RESUME" or "")
             subColor = colors.lightGray
         end
         if subline then c:center(2, subline, leftX1, leftX2, subColor, colors.black) end
@@ -2710,6 +2764,7 @@ local function eventLoop()
         local ev, a, b, c = os.pullEventRaw()
 
         if ev == "terminate" then
+            saveResume(true)
             state.running = false
             _G.__ccmusic_running = false
             state.generation = state.generation + 1
@@ -2815,11 +2870,22 @@ else
     local start = nil
     local resumePosition = 0
     if CONFIG.resumeEnabled then
-        local resumeName = tostring(getSetting("ccmusic.resume_track", "") or "")
-        resumePosition = tonumber(getSetting("ccmusic.resume_position", 0)) or 0
+        local session = loadResumeSession()
+        local resumeName
+        if session then
+            resumeName = session.track
+            resumePosition = session.position
+        else
+            resumeName = tostring(getSetting("ccmusic.resume_track", "") or "")
+            resumePosition = tonumber(getSetting("ccmusic.resume_position", 0)) or 0
+        end
+
         if resumeName ~= "" then
             for i = 1, #state.library do
-                if state.library[i].name == resumeName then start = i; break end
+                if state.library[i].name == resumeName then
+                    start = i
+                    break
+                end
             end
         end
     end
