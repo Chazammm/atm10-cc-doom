@@ -4,7 +4,7 @@ CC-Music 3.0 converter.
 
 Converts legally obtained source audio to:
   * SQSH1: 48 kHz mono DFPWM for mono sources (or --mono)
-  * SQSH2: 48 kHz true-stereo DFPWM for stereo sources\n\nAudio Profile A+ uses a 20 Hz DC/sub-bass cut, SoXR precision 33, the selected\nneutral 16 kHz low-pass, float32 stereo staging and -1 dB limiter headroom.
+  * SQSH2: 48 kHz true-stereo DFPWM for stereo sources\n\nAudio Profile A+ uses a 20 Hz DC/sub-bass cut, a high-quality 128-tap SWR\nresampler, the selected neutral 16 kHz low-pass, float32 stereo staging and\n-1 dB limiter headroom.
 
 SQSH2 stores fixed-size LEFT/RIGHT DFPWM blocks interleaved so CC:Tweaked can
 stream both channels in lockstep without buffering an entire song.
@@ -61,14 +61,15 @@ def probe_channels(ffprobe: str, src: Path) -> int:
 
 
 def base_filter() -> str:
-    # Profile A+ for DFPWM:
-    # - remove inaudible DC/sub-bass which otherwise consumes DFPWM headroom;
-    # - use high precision SoXR for the single sample-rate conversion;
-    # - keep the selected neutral 16 kHz ceiling;
-    # - reserve ~1 dB of peak headroom before DFPWM quantisation.
+    # Profile A+ for DFPWM.
+    #
+    # Gyan's Windows "essentials" build deliberately does not include libsoxr.
+    # Use FFmpeg's built-in SWR engine with a much larger filter instead. This
+    # remains completely self-contained and is excellent for an offline
+    # 44.1/48 kHz -> 48 kHz music conversion before the final DFPWM stage.
     return ",".join([
         "highpass=f=20:p=2",
-        "aresample=48000:resampler=soxr:precision=33",
+        "aresample=48000:resampler=swr:filter_size=128:phase_shift=10:exact_rational=1:linear_interp=0:cutoff=0.97",
         "lowpass=f=16000:p=2",
     ])
 
@@ -261,7 +262,7 @@ def main() -> int:
         raise SystemExit("No supported audio files found.")
 
     print(f"Found {len(sources)} source tracks.")
-    print("Mastering: Profile A+ / SoXR precision 33 / 20 Hz HP / 16 kHz LP / -1 dB limiter")
+    print("Mastering: Profile A+ / SWR 128-tap / 20 Hz HP / 16 kHz LP / -1 dB limiter")
     print("Stereo sources -> SQSH2 true stereo; mono sources -> SQSH1 mono.")
     print()
 
