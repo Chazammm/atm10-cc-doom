@@ -647,31 +647,51 @@ for _ = 1, nframes do
         end
 
     elseif frameType == 0 then
-        local deadline = (mediaStart or os.epoch("utc")) + (frameOffset + videoFrame) * frameMs
-        if not mediaStart then
-            mediaStart = deadline
-            if sessionActive then settings.set("musicvideo.session_start", mediaStart) end
-        end
-        local now = os.epoch("utc")
+        local globalFrame = frameOffset + videoFrame
+        currentGlobalFrame = globalFrame
 
-        if dropLate and videoFrame > 0 and now - deadline > frameMs * dropFactor then
-            file.read(size) -- consume compressed frame without decoding it
-            stats.dropped = stats.dropped + 1
+        if videoFrame < skipFrames then
+            file.read(size)
+            videoFrame = videoFrame + 1
         else
-            local payload = file.read(size)
-            -- Decode ahead of the presentation deadline. This uses otherwise-idle time
-            -- and avoids starting an expensive ANS decode at the exact frame deadline.
-            local screen, fg, bg, palette = decodeFrame(payload)
-            local afterDecode = os.epoch("utc")
-            if dropLate and videoFrame > 0 and afterDecode - deadline > frameMs * dropFactor then
+            if not mediaStart then
+                mediaStart = os.epoch("utc") - globalFrame * frameMs
+                if sessionActive then settings.set("musicvideo.session_start", mediaStart) end
+            end
+
+            local now = os.epoch("utc")
+            local deadline = mediaStart + globalFrame * frameMs
+            local lateness = now - deadline
+            if lateness > frameMs * 0.65 then lateScore = lateScore + 2
+            else lateScore = math.max(0, lateScore - 0.25) end
+
+            if adaptiveEnabled and fps >= 18 and lateScore >= 4 and globalFrame >= adaptiveUntil then
+                adaptiveUntil = globalFrame + math.floor(fps * 2)
+                lateScore = 0
+                stats.adaptiveBursts = stats.adaptiveBursts + 1
+            end
+
+            if globalFrame < adaptiveUntil and globalFrame % 2 == 1 then
+                file.read(size)
+                stats.adaptiveSkipped = stats.adaptiveSkipped + 1
+            elseif dropLate and videoFrame > skipFrames and lateness > frameMs * dropFactor then
+                file.read(size)
                 stats.dropped = stats.dropped + 1
             else
-                waitUntil(deadline)
-                drawFrame(screen, fg, bg, palette)
-                stats.frames = stats.frames + 1
+                local payload = file.read(size)
+                local screen, fg, bg, palette = decodeFrame(payload)
+                if dropLate and videoFrame > skipFrames and os.epoch("utc") - deadline > frameMs * dropFactor then
+                    stats.dropped = stats.dropped + 1
+                elseif waitUntilFrame(globalFrame) and not controlAction then
+                    drawFrame(screen, fg, bg, palette)
+                    stats.frames = stats.frames + 1
+                end
             end
+
+            videoFrame = videoFrame + 1
+            currentGlobalFrame = frameOffset + videoFrame
+            maybeSaveResume(currentGlobalFrame, false)
         end
-        videoFrame = videoFrame + 1
 
     elseif frameType == 8 then
         -- Consume subtitles for compatibility. The current Agartha files do not use them.
