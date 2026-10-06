@@ -4,7 +4,7 @@ if not base then error("Usage: agartha-v3-player <base-url> [start|resume]") end
 if base:sub(-1) ~= "/" then base = base .. "/" end
 
 local index = dofile("/video-lib/v3-index.lua")
-local fast = assert(loadfile("/video-lib/32vid-player-fast.lua"))
+local fast = assert(loadfile("/video-lib/32vid-player-fast.lua", nil, _ENV))
 local monitor = peripheral.find("monitor")
 if not monitor then error("No monitor found.") end
 local speaker = peripheral.find("speaker")
