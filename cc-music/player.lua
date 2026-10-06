@@ -1003,17 +1003,22 @@ local function tryStartSegment(segment, generation)
             local ev = os.pullEventRaw()
             if ev == "ccmusic_shutdown" then return false end
         else
+            local accepted = {}
+            local tasks = {}
+            for i = 1, #state.speakers do
+                local entry = state.speakers[i]
+                tasks[i] = function()
+                    local ok, value = pcall(entry.object.playAudio, segment, state.volume)
+                    accepted[i] = ok and value == true
+                end
+            end
+            parallel.waitForAll(table.unpack(tasks))
+
             local allAccepted = true
             local acceptedNames = {}
             for i = 1, #state.speakers do
-                local entry = state.speakers[i]
-                local ok, accepted = pcall(entry.object.playAudio, segment, state.volume)
-                if ok and accepted then
-                    acceptedNames[#acceptedNames + 1] = entry.name
-                else
-                    allAccepted = false
-                    break
-                end
+                if accepted[i] then acceptedNames[#acceptedNames + 1] = state.speakers[i].name
+                else allAccepted = false end
             end
 
             if allAccepted then
