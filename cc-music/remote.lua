@@ -1,6 +1,6 @@
 -- CC-Music Pocket/Computer Remote
 local PROTOCOL = "ccmusic.v2"
-local VERSION = "3.4.0"
+local VERSION = "3.5.0"
 
 local function nowMs()
     if os.epoch then return os.epoch("utc") end
@@ -71,7 +71,10 @@ local function draw()
         if h >= 10 then
             term.setCursorPos(2, 9)
             term.setTextColor(colors.gray)
-            term.write(("VIZ " .. tostring(status.viz_mode or "classic"):upper()):sub(1, math.max(1, w - 2)))
+            local vizLine = "VIZ " .. tostring(status.viz_mode or "classic"):upper()
+            if status.favorite then vizLine = vizLine .. "  *FAV" end
+            if tonumber(status.queue_count or 0) > 0 then vizLine = vizLine .. "  Q:" .. tostring(status.queue_count) end
+            term.write(vizLine:sub(1, math.max(1, w - 2)))
         end
         if status.error and h >= 10 then
             term.setCursorPos(2, 10)
@@ -91,6 +94,7 @@ local function draw()
         "A      Audio mode",
         "V      Visualizer",
         "J/K    -10s / +10s",
+        "B      Favorite",
         "Q      Quit",
     }
     local y = math.max(11, h - #help + 1)
@@ -129,7 +133,8 @@ while true do
         elseif a == keys.a then send("audio_mode")
         elseif a == keys.v then send("viz_mode")
         elseif a == keys.j then send("seek_rel", -10)
-        elseif a == keys.k then send("seek_rel", 10) end
+        elseif a == keys.k then send("seek_rel", 10)
+        elseif a == keys.b then send("favorite") end
     elseif ev == "terminate" then
         break
     end
