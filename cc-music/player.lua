@@ -570,6 +570,14 @@ local function cycleLoop()
     saveSetting("ccmusic.loop", state.loopMode)
 end
 
+local function cycleAudioMode()
+    if CONFIG.audioMode == "auto" then CONFIG.audioMode = "stereo"
+    elseif CONFIG.audioMode == "stereo" then CONFIG.audioMode = "mono"
+    else CONFIG.audioMode = "auto" end
+    saveSetting("ccmusic.audio_mode", CONFIG.audioMode)
+    interruptAudio("audio_mode")
+end
+
 -- ---------------------------------------------------------------------------
 -- SQSH + lyrics
 -- ---------------------------------------------------------------------------
@@ -1707,6 +1715,7 @@ local function drawControls(c, x1, y, x2)
     x = drawButton(c, x, y, ">|", false, "next")
     if x + 10 <= x2 then x = drawButton(c, x, y, "SHUFFLE", state.shuffle, "shuffle") end
     if x + 9 <= x2 then x = drawButton(c, x, y, "LOOP:" .. state.loopMode:upper(), state.loopMode ~= "off", "loop") end
+    if x + 12 <= x2 then x = drawButton(c, x, y, "AUDIO:" .. CONFIG.audioMode:upper(), CONFIG.audioMode ~= "mono", "audio_mode") end
 end
 
 local function drawProgress(c, x1, y, x2)
@@ -1876,6 +1885,7 @@ local function handleAction(id, data, touchX)
     elseif id == "next" then chooseNext(true)
     elseif id == "shuffle" then toggleShuffle()
     elseif id == "loop" then cycleLoop()
+    elseif id == "audio_mode" then cycleAudioMode()
     elseif id == "scroll_up" then scrollQueue(-1)
     elseif id == "scroll_down" then scrollQueue(1)
     elseif id == "track" then requestTrack(data, true)
@@ -1902,6 +1912,7 @@ local function broadcastStatus(targetId)
         loop = state.loopMode,
         speakers = #state.speakers,
         audio_mode = state.activeAudioMode,
+        routing_mode = CONFIG.audioMode,
         source_rate = state.sourceRate,
         source_channels = state.sourceChannels,
         source_format = state.sourceFormat,
@@ -1966,6 +1977,7 @@ local function eventLoop()
             elseif a == keys.down then setVolume(state.volume - 0.05)
             elseif a == keys.s and not state.searchMode then toggleShuffle()
             elseif a == keys.l and not state.searchMode then cycleLoop()
+            elseif a == keys.a and not state.searchMode then cycleAudioMode()
             elseif a == keys.f and not state.searchMode then state.searchMode = true; state.search = ""; state.queueScroll = 0
             elseif a == keys.escape and state.searchMode then state.searchMode = false; state.search = ""; state.queueScroll = 0
             elseif a == keys.enter and state.searchMode then
