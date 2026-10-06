@@ -68,7 +68,7 @@ local function cleanup()
     settings.unset("musicvideo.total_frames")
     settings.unset("musicvideo.segment_base_frame")
     settings.save()
-    for i = 0, 15 do monitor.setPaletteColor(2 ^ i, monitor.nativePaletteColor(2 ^ i)) end
+    for i = 0, 15 do monitor.setPaletteColor(2 ^ i, term.nativePaletteColor(2 ^ i)) end
     monitor.setBackgroundColor(colors.black)
     monitor.setTextColor(colors.white)
     monitor.clear()
