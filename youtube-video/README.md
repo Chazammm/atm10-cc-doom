@@ -129,3 +129,34 @@ DFPWM preprocessing profiles:
 
 Use the profile which sounds best through the actual in-game speakers as the basis
 for a future full-media re-encode.
+
+
+## Final V4
+
+The selected final profile combines the V4 direct-cell image encoder with Audio Profile A.
+
+- 8x5 Advanced Monitor wall at text scale 0.5;
+- 164x67 CC cells / 328x201 semigraphics raster;
+- 328x185 active image;
+- 20 FPS, 98,943 frames, 82:27.15;
+- direct 2x3-cell optimisation against original RGB pixels;
+- temporally matched/stabilised 16-colour palette windows;
+- 48 kHz DFPWM1a Audio Profile A (neutral, 16 kHz low-pass);
+- mono fallback plus independent left/right stereo tracks;
+- 136 release parts;
+- largest part 16,739,286 bytes, below the ATM10/CC:Tweaked 16 MiB HTTP limit;
+- touch OSD, seek, pause, volume, resume, adaptive lag handling and next-part prefetch.
+
+Start with:
+
+```
+agartha-v4
+```
+
+Resume the saved position with:
+
+```
+agartha-v4 resume
+```
+
+The complete V4 media is uploaded with `upload-v4.ps1` to the GitHub Release tag `agartha-v4`.
