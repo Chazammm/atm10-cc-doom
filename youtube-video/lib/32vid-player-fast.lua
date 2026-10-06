@@ -705,9 +705,16 @@ end
 
 file.close()
 
+if controlAction or endMode ~= "keep" then stopSpeakers() end
+
 if sessionActive then
     settings.set("musicvideo.session_frame", frameOffset + videoFrame)
 end
+maybeSaveResume(currentGlobalFrame, controlAction ~= nil)
+settings.set("musicvideo.volume", volume)
+settings.set("musicvideo.left_volume", volume)
+settings.set("musicvideo.right_volume", volume)
+settings.save()
 
 if endMode ~= "keep" then
     for i = 0, 15 do term.setPaletteColor(2 ^ i, term.nativePaletteColor(2 ^ i)) end
@@ -721,11 +728,17 @@ if showStats then
     local native = term.native()
     local old = term.redirect(native)
     local elapsed = math.max(1, os.epoch("utc") - stats.started)
-    print(("video: %d shown, %d dropped (%.1f%%)"):format(
-        stats.frames, stats.dropped, 100 * stats.dropped / math.max(1, stats.frames + stats.dropped)))
-    print(("rows blitted: %d | speaker waits: %d"):format(stats.rows, stats.backpressure))
-    print(("decode %.1f ms/frame | render %.1f ms/frame"):format(
-        stats.decodeMs / math.max(1, stats.frames), stats.renderMs / math.max(1, stats.frames)))
-    print(("elapsed %.1fs"):format(elapsed / 1000))
+    print(("video: %d shown, %d late-drop, %d adaptive-skip"):format(stats.frames, stats.dropped, stats.adaptiveSkipped))
+    print(("adaptive bursts: %d | rows: %d | speaker waits: %d"):format(stats.adaptiveBursts, stats.rows, stats.backpressure))
+    print(("decode %.1f ms/frame | render %.1f ms/frame | elapsed %.1fs"):format(
+        stats.decodeMs / math.max(1, stats.frames), stats.renderMs / math.max(1, stats.frames), elapsed / 1000))
     term.redirect(old)
 end
+
+return {
+    control = controlAction,
+    target = controlTarget,
+    current_frame = currentGlobalFrame,
+    video_frames_consumed = videoFrame,
+    stats = stats,
+}
