@@ -1,5 +1,5 @@
 local base = "https://raw.githubusercontent.com/Chazammm/atm10-cc-doom/main/youtube-video/"
-local cacheBust = "?v=20261006-1400"
+local cacheBust = "?v=20261006-1410"
 local files = {
   ["player.lua"] = "/video.lua",
   ["playlist.lua"] = "/playlist.lua",
