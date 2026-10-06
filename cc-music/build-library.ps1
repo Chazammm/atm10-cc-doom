@@ -226,6 +226,45 @@ $out = Join-Path $work "sqsh2"
 $converter = Join-Path $work "convert_to_sqsh48.py"
 New-Item -ItemType Directory -Force -Path $src,$out | Out-Null
 
+
+function Get-SqshMeta([string]$Path) {
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    $sep = -1
+    for ($i = 0; $i -lt ($bytes.Length - 1); $i++) {
+        if ($bytes[$i] -eq 10 -and $bytes[$i + 1] -eq 10) {
+            $sep = $i
+            break
+        }
+    }
+    if ($sep -lt 0) { throw "Invalid SQSH header: $Path" }
+
+    $text = [Text.Encoding]::ASCII.GetString($bytes, 0, $sep)
+    $lines = @($text -split [char]10)
+    $magic = $lines[0].Trim()
+    $values = @{}
+    for ($j = 1; $j -lt $lines.Count; $j++) {
+        $line = $lines[$j].Trim()
+        if ($line -match '^([^=]+)=(\d+)$') {
+            $values[$matches[1]] = [int64]$matches[2]
+        }
+    }
+
+    if (-not $values.ContainsKey("rate") -or -not $values.ContainsKey("audio")) {
+        throw "Incomplete SQSH header: $Path"
+    }
+
+    $channels = 1
+    if ($magic -eq "SQSH2") { $channels = 2 }
+    elseif ($magic -ne "SQSH1") { throw "Unsupported SQSH format '$magic': $Path" }
+
+    return [pscustomobject]@{
+        Format = $magic
+        Rate = [int]$values["rate"]
+        Channels = $channels
+        AudioBytes = [int64]$values["audio"]
+    }
+}
+
 try {
     Write-Host ""
     Write-Host "=== CC-Music Library Builder ===" -ForegroundColor Cyan
@@ -251,11 +290,11 @@ try {
 
     Write-Host ("Found {0} source track(s)." -f $sources.Count) -ForegroundColor Green
 
-    $raw = "https://raw.githubusercontent.com/$Repo/$Branch/cc-music/tools/convert_to_sqsh48.py?v=3.0.7"
+    $raw = "https://raw.githubusercontent.com/$Repo/$Branch/cc-music/tools/convert_to_sqsh48.py?v=3.0.8"
     Write-Host "Downloading current Profile A+ converter..." -ForegroundColor Cyan
     Invoke-WebRequest -UseBasicParsing -Uri $raw -OutFile $converter
 
-    $converterArgs = @($converter, $src, "--output", $out, "--overwrite")
+    $converterArgs = @($converter, $src, "--output", $out, "--overwrite", "--max-file-bytes", "15728640")
     if ($Normalize) { $converterArgs += "--normalize" }
 
     Write-Host ""
@@ -267,49 +306,116 @@ try {
     $files = @(Get-ChildItem -Path $out -Recurse -File -Filter "*.sqsh" | Sort-Object FullName)
     if ($files.Count -eq 0) { throw "Converter produced no .sqsh files." }
 
-    # Flatten into release-safe unique names. Keep a deterministic collision suffix.
+    # Group normal files and .partNNN files back into logical tracks.
+    # Long albums remain one track in the UI even though GitHub/CC:Tweaked
+    # streams them through several <=15 MiB assets.
     $stage = Join-Path $work "release"
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     $used = @{}
     $tracks = @()
-    $maxHttp = 16MB
+    $groups = @{}
 
     foreach ($file in $files) {
-        $base = [IO.Path]::GetFileNameWithoutExtension($file.Name)
-        $safe = ($base -replace '[^A-Za-z0-9 _().,&+''\-]', '_').Trim()
-        if ([string]::IsNullOrWhiteSpace($safe)) { $safe = "track" }
-
-        $name = $safe + ".sqsh"
-        $n = 2
-        while ($used.ContainsKey($name.ToLowerInvariant())) {
-            $name = "{0} ({1}).sqsh" -f $safe,$n
-            $n++
-        }
-        $used[$name.ToLowerInvariant()] = $true
-
-        $dst = Join-Path $stage $name
-        Copy-Item -LiteralPath $file.FullName -Destination $dst
-        $size = (Get-Item $dst).Length
-
-        if ($size -gt $maxHttp) {
-            throw ("'{0}' is {1:N1} MiB, above the 16 MiB CC:Tweaked HTTP target. Remove/shorten that track or split it before upload." -f $name, ($size/1MB))
+        $stem = [IO.Path]::GetFileNameWithoutExtension($file.Name)
+        $logicalStem = $stem
+        $partNo = 1
+        $isPart = $false
+        if ($stem -match '^(.*)\.part(\d{3})$') {
+            $logicalStem = $matches[1]
+            $partNo = [int]$matches[2]
+            $isPart = $true
         }
 
-        $display = [IO.Path]::GetFileNameWithoutExtension($name)
-        $encodedName = [Uri]::EscapeDataString($name).Replace("%2F","/")
-        $url = "https://github.com/$Repo/releases/download/$Tag/$encodedName"
-
-        $tracks += [ordered]@{
-            name = $name
-            title = $display
-            size = $size
-            url = $url
+        $groupKey = $file.DirectoryName + "|" + $logicalStem
+        if (-not $groups.ContainsKey($groupKey)) {
+            $groups[$groupKey] = [ordered]@{
+                Stem = $logicalStem
+                Items = @()
+            }
+        }
+        $groups[$groupKey].Items += [pscustomobject]@{
+            File = $file
+            PartNo = $partNo
+            IsPart = $isPart
         }
     }
 
+    foreach ($group in ($groups.Values | Sort-Object Stem)) {
+        $safe = ($group.Stem -replace '[^A-Za-z0-9 _().,&+''\-]', '_').Trim()
+        if ([string]::IsNullOrWhiteSpace($safe)) { $safe = "track" }
+
+        $logicalName = $safe + ".sqsh"
+        $n = 2
+        while ($used.ContainsKey($logicalName.ToLowerInvariant())) {
+            $logicalName = "{0} ({1}).sqsh" -f $safe,$n
+            $n++
+        }
+        $used[$logicalName.ToLowerInvariant()] = $true
+        $logicalBase = [IO.Path]::GetFileNameWithoutExtension($logicalName)
+
+        $items = @($group.Items | Sort-Object PartNo)
+        $manifestParts = @()
+        $totalSize = [int64]0
+        $totalAudioBytes = [int64]0
+        $firstMeta = $null
+
+        for ($p = 0; $p -lt $items.Count; $p++) {
+            $item = $items[$p]
+            $meta = Get-SqshMeta $item.File.FullName
+            if (-not $firstMeta) { $firstMeta = $meta }
+
+            if ($items.Count -eq 1) {
+                $assetName = $logicalName
+            } else {
+                $assetName = "{0}.part{1:D3}.sqsh" -f $logicalBase,($p + 1)
+            }
+
+            $dst = Join-Path $stage $assetName
+            Copy-Item -LiteralPath $item.File.FullName -Destination $dst
+            $size = (Get-Item $dst).Length
+            if ($size -gt 16MB) {
+                throw ("Generated asset '{0}' is still above 16 MiB: {1:N1} MiB" -f $assetName, ($size/1MB))
+            }
+
+            $encoded = [Uri]::EscapeDataString($assetName).Replace("%2F","/")
+            $url = "https://github.com/$Repo/releases/download/$Tag/$encoded"
+            $totalSize += $size
+            $totalAudioBytes += $meta.AudioBytes
+
+            $manifestParts += [ordered]@{
+                name = $assetName
+                size = $size
+                audio_bytes = $meta.AudioBytes
+                url = $url
+            }
+        }
+
+        $duration = [double]$totalAudioBytes * 8.0 / [double]$firstMeta.Rate
+        $track = [ordered]@{
+            name = $logicalName
+            title = $logicalBase
+            size = $totalSize
+            duration = [Math]::Round($duration, 6)
+            format = $firstMeta.Format
+            rate = $firstMeta.Rate
+            channels = $firstMeta.Channels
+        }
+
+        if ($manifestParts.Count -eq 1) {
+            $track.url = $manifestParts[0].url
+        } else {
+            $track.segmented = $true
+            $track.parts = $manifestParts
+            Write-Host ("Segmented: {0} -> {1} HTTP-safe parts" -f $logicalBase,$manifestParts.Count) -ForegroundColor Yellow
+        }
+
+        $tracks += $track
+    }
+
     $manifest = [ordered]@{
-        version = 1
+        version = 2
         format = "CC-Music Library"
+        segmented_tracks = $true
         created_utc = (Get-Date).ToUniversalTime().ToString("o")
         tag = $Tag
         profile = "A+"
