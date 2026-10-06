@@ -80,7 +80,8 @@ local function draw()
     term.setCursorPos(2, y + 2); term.write("RIGHT  Next")
     term.setCursorPos(2, y + 3); term.write("UP/DN  Volume")
     term.setCursorPos(2, y + 4); term.write("S/L    Shuffle/Loop")
-    term.setCursorPos(2, y + 5); term.write("Q      Quit")
+    term.setCursorPos(2, y + 5); term.write("A      Audio mode")
+    term.setCursorPos(2, y + 6); term.write("Q      Quit")
 end
 
 discover()
@@ -104,7 +105,8 @@ while true do
         elseif a == keys.up then send("volume", math.min(1, (status and status.volume or 0.5) + 0.05))
         elseif a == keys.down then send("volume", math.max(0, (status and status.volume or 0.5) - 0.05))
         elseif a == keys.s then send("shuffle")
-        elseif a == keys.l then send("loop") end
+        elseif a == keys.l then send("loop")
+        elseif a == keys.a then send("audio_mode") end
     elseif ev == "terminate" then
         break
     end
