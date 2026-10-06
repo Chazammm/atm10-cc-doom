@@ -95,6 +95,11 @@ if width > tw or height > th then
     error(("Video is %dx%d cells, terminal is only %dx%d"):format(width, height, tw, th))
 end
 
+-- Centre media which was encoded for an older/smaller monitor layout.
+-- This makes legacy V1/V2 files look sane on the new 164x67 (8x5) wall.
+local xOffset = math.floor((tw - width) / 2) + 1
+local yOffset = math.floor((th - height) / 2) + 1
+
 if fpsOverride and fpsOverride > 0 then fps = fpsOverride end
 
 local cellCount = width * height
@@ -318,7 +323,7 @@ local function drawFrame(screen, fg, bg, palette)
         local yy = y + 1
 
         if not diffRows or previousText[yy] ~= text or previousFg[yy] ~= fgs or previousBg[yy] ~= bgs then
-            term.setCursorPos(1, yy)
+            term.setCursorPos(xOffset, yOffset + yy - 1)
             term.blit(text, fgs, bgs)
             previousText[yy], previousFg[yy], previousBg[yy] = text, fgs, bgs
             stats.rows = stats.rows + 1
