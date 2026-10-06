@@ -2,7 +2,7 @@
 -- Designed for large Advanced Monitor walls and SQSH1/SQSH2 (DFPWM) audio files.
 -- Repository default: https://github.com/Di33le/CC-Music
 
-local VERSION = "3.5.2"
+local VERSION = "3.6.0"
 local PROTOCOL = "ccmusic.v2"
 local INDEX_CACHE = "/.ccmusic-index.json"
 
@@ -35,8 +35,8 @@ defineSetting("ccmusic.chunk_bytes", 0, "number", "DFPWM bytes per chunk; 0 = au
 defineSetting("ccmusic.hq_resampler", true, "boolean", "Use higher-quality 24 kHz -> 48 kHz interpolation")
 defineSetting("ccmusic.legacy_resampler", "sinc8", "string", "24 kHz upsampler: sinc8, cubic, or linear")
 defineSetting("ccmusic.ui_fps", 12, "number", "Maximum UI refresh rate")
-defineSetting("ccmusic.viz_slice_bytes", 512, "number", "DFPWM bytes per visualizer/audio scheduling slice at 48 kHz")
-defineSetting("ccmusic.viz_mode", "classic", "string", "Visualizer: classic, mirror, or meter")
+defineSetting("ccmusic.viz_slice_bytes", 1024, "number", "DFPWM bytes per visualizer/audio scheduling slice at 48 kHz")
+defineSetting("ccmusic.viz_mode", "classic", "string", "Visualizer: classic, mirror, meter, wave, orbit, or vu")
 defineSetting("ccmusic.start_track", "Sundress", "string", "Preferred title substring to play first")
 defineSetting("ccmusic.library_repo", "Chazammm/atm10-cc-doom", "string", "Repository containing the CC-Music release library")
 defineSetting("ccmusic.library_tag", "cc-music-library-v1", "string", "GitHub release tag containing library.json and SQSH assets")
@@ -68,7 +68,7 @@ local CONFIG = {
     hqResampler = getSetting("ccmusic.hq_resampler", true) ~= false,
     legacyResampler = tostring(getSetting("ccmusic.legacy_resampler", "sinc8")):lower(),
     uiFps = tonumber(getSetting("ccmusic.ui_fps", 12)) or 12,
-    vizSliceBytes = math.floor(tonumber(getSetting("ccmusic.viz_slice_bytes", 512)) or 512),
+    vizSliceBytes = math.floor(tonumber(getSetting("ccmusic.viz_slice_bytes", 1024)) or 1024),
     vizMode = tostring(getSetting("ccmusic.viz_mode", "classic")):lower(),
     startTrack = tostring(getSetting("ccmusic.start_track", "Sundress")),
     libraryRepo = tostring(getSetting("ccmusic.library_repo", "Chazammm/atm10-cc-doom")),
@@ -84,7 +84,7 @@ local CONFIG = {
 if CONFIG.chunkBytes ~= 0 then CONFIG.chunkBytes = math.max(256, math.min(16384, CONFIG.chunkBytes)) end
 CONFIG.uiFps = math.max(2, math.min(16, CONFIG.uiFps))
 CONFIG.vizSliceBytes = math.max(256, math.min(2048, CONFIG.vizSliceBytes))
-if CONFIG.vizMode ~= "classic" and CONFIG.vizMode ~= "mirror" and CONFIG.vizMode ~= "meter" then CONFIG.vizMode = "classic" end
+if CONFIG.vizMode ~= "classic" and CONFIG.vizMode ~= "mirror" and CONFIG.vizMode ~= "meter" and CONFIG.vizMode ~= "wave" and CONFIG.vizMode ~= "orbit" and CONFIG.vizMode ~= "vu" then CONFIG.vizMode = "classic" end
 if CONFIG.textScale < 0.5 then CONFIG.textScale = 0.5 end
 if CONFIG.textScale > 5 then CONFIG.textScale = 5 end
 if CONFIG.legacyResampler ~= "sinc8" and CONFIG.legacyResampler ~= "cubic" and CONFIG.legacyResampler ~= "linear" then CONFIG.legacyResampler = "sinc8" end
@@ -428,6 +428,15 @@ local state = {
     vizBass = 0,
     vizGain = 1,
     vizLastMs = nil,
+    waveL = {},
+    waveR = {},
+    rmsLTarget = 0,
+    rmsRTarget = 0,
+    rmsL = 0,
+    rmsR = 0,
+    renderAvgMs = 0,
+    renderLastMs = 0,
+    performanceGuardUntil = 0,
     searchMode = false,
     search = "",
     queueScroll = 0,
@@ -894,6 +903,9 @@ end
 local function cycleVizMode()
     if CONFIG.vizMode == "classic" then CONFIG.vizMode = "mirror"
     elseif CONFIG.vizMode == "mirror" then CONFIG.vizMode = "meter"
+    elseif CONFIG.vizMode == "meter" then CONFIG.vizMode = "wave"
+    elseif CONFIG.vizMode == "wave" then CONFIG.vizMode = "orbit"
+    elseif CONFIG.vizMode == "orbit" then CONFIG.vizMode = "vu"
     else CONFIG.vizMode = "classic" end
     saveSetting("ccmusic.viz_mode", CONFIG.vizMode)
     state._frameInvalid = true
@@ -1112,11 +1124,62 @@ local function perceptualBand(mag)
     return math.sqrt(v)
 end
 
+local function rmsOnly(samples)
+    local n = #samples
+    if n == 0 then return 0 end
+    local start = math.max(1, n - 383)
+    local sumSq, count = 0, 0
+    for i = start, n do
+        local v = (samples[i] or 0) / 128
+        sumSq = sumSq + v * v
+        count = count + 1
+    end
+    if count == 0 then return 0 end
+    return math.sqrt(sumSq / count)
+end
+
+local function captureWave(samples, points)
+    local n = #samples
+    local out = {}
+    points = math.max(16, math.floor(points or 72))
+    if n == 0 then return out end
+
+    -- Use the newest audio window and average small spans instead of taking
+    -- isolated samples. This reduces DFPWM "hair" and looks much steadier.
+    local window = math.min(n, 1024)
+    local first = n - window + 1
+    for p = 1, points do
+        local a = first + math.floor((p - 1) * window / points)
+        local b = first + math.floor(p * window / points) - 1
+        if b < a then b = a end
+        local sum, count = 0, 0
+        for i = a, math.min(b, n) do
+            sum = sum + (samples[i] or 0)
+            count = count + 1
+        end
+        out[p] = clamp((count > 0 and sum / count or 0) / 128, -1, 1)
+    end
+    return out
+end
+
 local function analyzeAudio(samples, rate)
-    local mags, maxMag, rms = spectrumOf(samples, rate)
+    if #samples == 0 then return end
+
+    local rms = rmsOnly(samples)
+    state.rmsTarget = rms
+    state.rmsLTarget, state.rmsRTarget = rms, rms
+
+    if CONFIG.vizMode == "wave" then
+        local wave = captureWave(samples, 72)
+        state.waveL, state.waveR = wave, wave
+        return
+    elseif CONFIG.vizMode == "vu" then
+        return
+    end
+
+    local mags, maxMag = spectrumOf(samples, rate)
     if not mags then return end
     updateVizGain(maxMag)
-    state.rmsTarget = rms
 
     for i = 1, #mags do
         local v = perceptualBand(mags[i])
@@ -1128,13 +1191,27 @@ local function analyzeAudio(samples, rate)
 end
 
 local function analyzeStereoAudio(left, right, rate)
-    local magsL, maxL, rmsL = spectrumOf(left, rate)
-    local magsR, maxR, rmsR = spectrumOf(right, rate)
+    if #left == 0 or #right == 0 then return end
+
+    local rmsL, rmsR = rmsOnly(left), rmsOnly(right)
+    state.rmsLTarget, state.rmsRTarget = rmsL, rmsR
+    state.rmsTarget = math.sqrt((rmsL * rmsL + rmsR * rmsR) * 0.5)
+
+    if CONFIG.vizMode == "wave" then
+        state.waveL = captureWave(left, 72)
+        state.waveR = captureWave(right, 72)
+        return
+    elseif CONFIG.vizMode == "vu" then
+        return
+    end
+
+    -- Only MIRROR needs two complete spectral analyses. Other spectrum modes
+    -- use the cheaper mono analysis path in audioLoop.
+    local magsL, maxL = spectrumOf(left, rate)
+    local magsR, maxR = spectrumOf(right, rate)
     if not magsL or not magsR then return end
 
     updateVizGain(math.max(maxL, maxR))
-    state.rmsTarget = math.sqrt((rmsL * rmsL + rmsR * rmsR) * 0.5)
-
     for i = 1, #magsL do
         local l = perceptualBand(magsL[i])
         local r = perceptualBand(magsR[i])
@@ -1160,6 +1237,13 @@ local function advanceVisualizer()
     local rmsTau = rmsTarget > (state.rms or 0) and 0.045 or 0.20
     local rmsK = 1 - math.exp(-dt / rmsTau)
     state.rms = (state.rms or 0) + (rmsTarget - (state.rms or 0)) * rmsK
+
+    local lTarget = active and (state.rmsLTarget or rmsTarget) or 0
+    local rTarget = active and (state.rmsRTarget or rmsTarget) or 0
+    local lTau = lTarget > (state.rmsL or 0) and 0.040 or 0.22
+    local rTau = rTarget > (state.rmsR or 0) and 0.040 or 0.22
+    state.rmsL = (state.rmsL or 0) + (lTarget - (state.rmsL or 0)) * (1 - math.exp(-dt / lTau))
+    state.rmsR = (state.rmsR or 0) + (rTarget - (state.rmsR or 0)) * (1 - math.exp(-dt / rTau))
 
     local bassSum = 0
     for i = 1, #VIZ_FREQS do
@@ -1729,11 +1813,17 @@ local function chunkBytesForRate(rate)
 end
 
 local function vizSliceBytesForRate(rate)
-    -- 512 DFPWM bytes at 48 kHz = 4096 samples ~= 85 ms (~11.7 Hz).
-    -- Scale at lower source rates so visual response stays around the same
-    -- real-time cadence.
-    local scaled = math.floor(CONFIG.vizSliceBytes * rate / 48000 + 0.5)
-    return math.max(128, math.min(2048, scaled))
+    -- Balanced default: 1024 DFPWM bytes = 8192 samples ~= 171 ms at 48 kHz.
+    -- This gives the speaker twice as much audio per call as 3.5.x while the
+    -- 12 FPS attack/release interpolator keeps the visual movement smooth.
+    -- Under detected UI load we temporarily double the audio slice again,
+    -- prioritising glitch-free playback over analyzer update frequency.
+    local base = CONFIG.vizSliceBytes
+    if nowMs() < (state.performanceGuardUntil or 0) then
+        base = math.min(4096, base * 2)
+    end
+    local scaled = math.floor(base * rate / 48000 + 0.5)
+    return math.max(256, math.min(4096, scaled))
 end
 
 local function audioLoop()
@@ -1940,7 +2030,11 @@ local function audioLoop()
                                 end
 
                                 local analysisMono = stereo.mix(decodedL, decodedR)
-                                analyzeStereoAudio(decodedL, decodedR, header.rate)
+                                if CONFIG.vizMode == "mirror" or CONFIG.vizMode == "wave" or CONFIG.vizMode == "vu" then
+                                    analyzeStereoAudio(decodedL, decodedR, header.rate)
+                                else
+                                    analyzeAudio(analysisMono, header.rate)
+                                end
 
                                 if wantStereo then
                                     local leftPcm, rightPcm
@@ -2267,6 +2361,106 @@ local function drawVisualizer(c, x1, y1, x2, y2)
         return
     end
 
+    if CONFIG.vizMode == "wave" then
+        -- Stereo oscilloscope: left channel above the axis, right below.
+        local width = x2 - x1 + 1
+        local mid = cy
+        local amp = math.max(2, math.floor((y2 - y1) * 0.34))
+        c:hline(x1, x2, mid, "-", colors.gray, colors.black)
+        c:text(x1 + 1, y1, "WAVE  L", colors.cyan, colors.black)
+        c:text(math.max(x1 + 10, x2 - 7), y1, "R", colors.magenta, colors.black)
+
+        local points = math.min(#state.waveL, #state.waveR)
+        if points > 1 then
+            local lastLX, lastLY, lastRX, lastRY
+            for p = 1, points do
+                local x = x1 + math.floor((p - 1) * (width - 1) / (points - 1))
+                local lv = clamp(state.waveL[p] or 0, -1, 1)
+                local rv = clamp(state.waveR[p] or 0, -1, 1)
+                local ly = clamp(mid - 1 - math.floor(lv * amp + 0.5), y1 + 1, mid - 1)
+                local ry = clamp(mid + 1 + math.floor(rv * amp + 0.5), mid + 1, y2)
+
+                c:cell(x, ly, "*", colors.cyan, colors.black)
+                c:cell(x, ry, "*", colors.magenta, colors.black)
+
+                -- Cheap vertical bridge when adjacent samples jump by >1 row.
+                if lastLX and x ~= lastLX then
+                    if math.abs(ly - lastLY) > 1 then
+                        c:vline(x, math.min(ly, lastLY), math.max(ly, lastLY), ".", colors.lightBlue, colors.black)
+                    end
+                    if math.abs(ry - lastRY) > 1 then
+                        c:vline(x, math.min(ry, lastRY), math.max(ry, lastRY), ".", colors.pink, colors.black)
+                    end
+                end
+                lastLX, lastLY, lastRX, lastRY = x, ly, x, ry
+            end
+        end
+        return
+    end
+
+    if CONFIG.vizMode == "orbit" then
+        -- Radial spectrum around a bass-reactive core.
+        local maxR = math.max(5, math.min(math.floor((x2 - x1) * 0.23), math.floor((y2 - y1) * 0.42)))
+        local core = math.max(2, math.floor(maxR * 0.48))
+        local pulse = clamp((state.vizBass or 0) * 1.45 + (state.rms or 0) * 0.35, 0, 1)
+        core = core + math.floor(pulse * 2 + 0.5)
+
+        for deg = 0, 350, 10 do
+            local a = deg * math.pi / 180
+            local x = math.floor(cx + math.cos(a) * core + 0.5)
+            local y = math.floor(cy + math.sin(a) * core + 0.5)
+            c:cell(x, y, ".", colors.white, colors.black)
+        end
+
+        for b = 1, bands do
+            local a = ((b - 1) / bands) * math.pi * 2 - math.pi / 2
+            local v = clamp(state.bands[b] or 0, 0, 1)
+            local length = 1 + math.floor(v * math.max(2, maxR - core) + 0.5)
+            local col = RAINBOW[b] or colors.white
+            for step = 0, length do
+                local r = core + step
+                local x = math.floor(cx + math.cos(a) * r + 0.5)
+                local y = math.floor(cy + math.sin(a) * r + 0.5)
+                c:cell(x, y, " ", col, col)
+            end
+        end
+
+        c:center(cy, "ORBIT", cx - 4, cx + 4, colors.white, colors.black)
+        return
+    end
+
+    if CONFIG.vizMode == "vu" then
+        -- Large stereo VU meters: very cheap to render/analyse and therefore a
+        -- useful low-load mode on laggier servers.
+        local meterX1 = x1 + 5
+        local meterX2 = x2 - 5
+        local meterW = math.max(10, meterX2 - meterX1 + 1)
+        local topY = cy - 4
+        local bottomY = cy + 4
+
+        local function meter(y, label, value, col)
+            c:text(x1 + 1, y, label, colors.white, colors.black)
+            local filled = math.floor(clamp(value * 2.4, 0, 1) * meterW + 0.5)
+            for i = 0, meterW - 1 do
+                local barCol = i < filled and col or colors.gray
+                c:cell(meterX1 + i, y, " ", barCol, barCol)
+            end
+            local pct = math.floor(clamp(value * 2.4, 0, 1) * 100 + 0.5)
+            c:text(math.max(meterX1, x2 - 4), y, string.format("%3d", pct), colors.white, colors.black)
+        end
+
+        c:center(y1, "STEREO VU", x1, x2, colors.gray, colors.black)
+        meter(topY, "L", state.rmsL or 0, colors.cyan)
+        meter(bottomY, "R", state.rmsR or 0, colors.magenta)
+
+        local balance = (state.rmsR or 0) - (state.rmsL or 0)
+        local balanceX = cx + math.floor(clamp(balance * 5, -1, 1) * math.max(1, math.floor(meterW * 0.2)))
+        c:hline(cx - 8, cx + 8, cy, "-", colors.gray, colors.black)
+        c:cell(balanceX, cy, "|", colors.white, colors.black)
+        c:center(cy + 2, "BALANCE", cx - 5, cx + 5, colors.lightGray, colors.black)
+        return
+    end
+
     -- CLASSIC: the original ring/bar look, now with smoothing + peaks.
     local baseRx = math.max(5, math.floor((x2 - x1) * 0.36))
     local baseRy = math.max(3, math.floor((y2 - y1) * 0.40))
@@ -2555,7 +2749,8 @@ local function renderFrame()
     elseif state.sourceRate == 24000 then
         audioBadge = audioBadge .. " " .. CONFIG.legacyResampler:upper()
     end
-    local statusRight = string.format("%s  %d remote  %d spk", audioBadge, activeRemoteCount(), #state.speakers)
+    local perfBadge = nowMs() < (state.performanceGuardUntil or 0) and " SAFE" or ""
+    local statusRight = string.format("%s%s  %d remote  %d spk", audioBadge, perfBadge, activeRemoteCount(), #state.speakers)
     c:text(math.max(1, w - #statusRight), 1, statusRight, colors.white, colors.blue)
     if state.current then
         local rightLimit = math.max(20, w - #statusRight - 2)
@@ -2635,10 +2830,27 @@ local function renderFrame()
 end
 
 local function renderLoop()
-    local delay = 1 / CONFIG.uiFps
     while state.running do
+        local started = nowMs()
         local ok, err = pcall(renderFrame)
-        if not ok then state.lastUiError = tostring(err) end
+        local elapsed = math.max(0, nowMs() - started)
+        state.renderLastMs = elapsed
+        if state.renderAvgMs <= 0 then state.renderAvgMs = elapsed
+        else state.renderAvgMs = state.renderAvgMs * 0.88 + elapsed * 0.12 end
+
+        if not ok then
+            state.lastUiError = tostring(err)
+            state.performanceGuardUntil = nowMs() + 5000
+        elseif elapsed >= 45 or state.renderAvgMs >= 28 then
+            -- Back off UI work for a few seconds. Audio remains the priority.
+            state.performanceGuardUntil = nowMs() + 5000
+        end
+
+        local fps = CONFIG.uiFps
+        if state.paused or state.settingsOpen then fps = math.min(fps, 8) end
+        if nowMs() < (state.performanceGuardUntil or 0) then fps = math.min(fps, 8) end
+
+        local delay = 1 / math.max(2, fps)
         local timer = os.startTimer(delay)
         while state.running do
             local ev, id = os.pullEventRaw()
