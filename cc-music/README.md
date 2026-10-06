@@ -1,4 +1,4 @@
-# CC-Music 3.3 for ATM10 8.2 / CC:Tweaked
+# CC-Music 3.4 for ATM10 8.2 / CC:Tweaked
 
 A large-monitor music player for CC:Tweaked, built around the `Di33le/CC-Music` library and extended with true stereo support.
 
@@ -89,7 +89,7 @@ Legacy format:
 
 ### SQSH2
 
-CC-Music 3.3 stereo format:
+CC-Music 3.4 stereo format:
 
 - two independent DFPWM channels;
 - 48 kHz;
@@ -269,3 +269,19 @@ Additional UI polish:
 - compact Now Playing metadata row with duration, SQSH format and active visualizer mode.
 
 The visualizer changes do not alter the 48 kHz DIRECT audio bitstream.
+
+
+## Transport and touch polish in 3.4
+
+The 8x5 monitor UI now behaves more like a real media player:
+
+- the progress bar is touch-seekable;
+- dedicated `-10` and `+10` touch buttons were added;
+- `J` and `K` seek backward/forward by 10 seconds;
+- the title in the top bar scrolls smoothly when it is too long;
+- the progress playhead is highlighted separately from the filled portion;
+- transport buttons and mode buttons are split across two rows for easier touch use;
+- the compact Now Playing row shows current time, duration, SQSH format and visualizer mode;
+- Rednet remote also supports `J/K` seeking.
+
+SQSH2 seeking is aligned to a valid interleaved audio-block boundary so LEFT/RIGHT stay synchronized. Long segmented albums continue to behave as one logical track.
