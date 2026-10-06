@@ -1,7 +1,7 @@
 -- CC-Music 3.0 diagnostics / setup report.
 local function yn(v) return v and "YES" or "NO" end
 
-print("CC-Music 3.5.1 diagnostics")
+print("CC-Music 3.5.2 diagnostics")
 print("------------------------")
 
 local monitor, monitorName = peripheral.find("monitor", function(name) monitorName = name; return true end)
@@ -55,3 +55,21 @@ if not ready and #speakers >= 2 then
     print("Run 'music-stereo' to assign LEFT and RIGHT.")
 end
 print("Run 'music' to start the player.")
+
+
+print("")
+if fs.exists("/ccmusic/session.json") then
+    local h = fs.open("/ccmusic/session.json", "r")
+    local raw = h and h.readAll() or ""
+    if h then h.close() end
+    local ok, data = pcall(textutils.unserializeJSON, raw)
+    if ok and type(data) == "table" then
+        print("Resume session: OK")
+        print("  Track   : " .. tostring(data.track or "?"))
+        print("  Position: " .. tostring(math.floor((tonumber(data.position) or 0) + 0.5)) .. "s")
+    else
+        print("Resume session: INVALID")
+    end
+else
+    print("Resume session: not created yet")
+end
