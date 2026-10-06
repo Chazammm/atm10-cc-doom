@@ -1,6 +1,6 @@
 -- CC-Music Pocket/Computer Remote
 local PROTOCOL = "ccmusic.v2"
-local VERSION = "3.0.0"
+local VERSION = "3.3.0"
 
 local function nowMs()
     if os.epoch then return os.epoch("utc") end
@@ -81,7 +81,8 @@ local function draw()
     term.setCursorPos(2, y + 3); term.write("UP/DN  Volume")
     term.setCursorPos(2, y + 4); term.write("S/L    Shuffle/Loop")
     term.setCursorPos(2, y + 5); term.write("A      Audio mode")
-    term.setCursorPos(2, y + 6); term.write("Q      Quit")
+    term.setCursorPos(2, y + 6); term.write("V      Visualizer")
+    term.setCursorPos(2, y + 7); term.write("Q      Quit")
 end
 
 discover()
@@ -106,7 +107,8 @@ while true do
         elseif a == keys.down then send("volume", math.max(0, (status and status.volume or 0.5) - 0.05))
         elseif a == keys.s then send("shuffle")
         elseif a == keys.l then send("loop")
-        elseif a == keys.a then send("audio_mode") end
+        elseif a == keys.a then send("audio_mode")
+        elseif a == keys.v then send("viz_mode") end
     elseif ev == "terminate" then
         break
     end
