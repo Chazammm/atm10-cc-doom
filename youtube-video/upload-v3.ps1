@@ -5,6 +5,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$ExpectedParts = 86
 
 function Find-Gh {
     $cmd = Get-Command gh.exe -ErrorAction SilentlyContinue
@@ -108,10 +109,13 @@ try {
             if ($n -gt $maxPart) { $maxPart = $n }
         }
     }
-    for ($i=1; $i -le $maxPart; $i++) {
+    if ($maxPart -ne $ExpectedParts -or $numbered.Count -ne $ExpectedParts) {
+        throw ("Expected {0} V3 parts but found {1} (highest part {2}). Download all V3 packs first." -f $ExpectedParts,$numbered.Count,$maxPart)
+    }
+    for ($i=1; $i -le $ExpectedParts; $i++) {
         if (-not $numbered.ContainsKey($i)) { throw ("Missing agartha-v3-part{0:D2}.32vid" -f $i) }
     }
-    $files = @(1..$maxPart | ForEach-Object { $numbered[$_] })
+    $files = @(1..$ExpectedParts | ForEach-Object { $numbered[$_] })
 
     $totalMiB = [Math]::Round((($files | Measure-Object Length -Sum).Sum / 1MB),1)
     Write-Host ("Found {0} parts ({1} MiB)." -f $files.Count,$totalMiB) -ForegroundColor Green
