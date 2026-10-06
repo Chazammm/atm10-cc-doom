@@ -169,7 +169,7 @@ ccmusic.loop                all
 ccmusic.text_scale          0.5
 ccmusic.chunk_bytes         0
 ccmusic.hq_resampler        true
-ccmusic.ui_fps              6
+ccmusic.ui_fps              8
 ccmusic.start_track         Sundress
 
 ccmusic.audio_mode          auto
