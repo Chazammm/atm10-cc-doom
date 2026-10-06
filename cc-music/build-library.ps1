@@ -251,7 +251,7 @@ try {
 
     Write-Host ("Found {0} source track(s)." -f $sources.Count) -ForegroundColor Green
 
-    $raw = "https://raw.githubusercontent.com/$Repo/$Branch/cc-music/tools/convert_to_sqsh48.py?v=3.0.4"
+    $raw = "https://raw.githubusercontent.com/$Repo/$Branch/cc-music/tools/convert_to_sqsh48.py?v=3.0.7"
     Write-Host "Downloading current Profile A+ converter..." -ForegroundColor Cyan
     Invoke-WebRequest -UseBasicParsing -Uri $raw -OutFile $converter
 
