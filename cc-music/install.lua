@@ -1,6 +1,6 @@
 -- CC-Music one-line installer for CC:Tweaked / ATM10 8.2
 local BASE = "https://raw.githubusercontent.com/Chazammm/atm10-cc-doom/cc-music-player/cc-music/"
-local CACHE = "?v=3.1.0"
+local CACHE = "?v=3.1.1"
 local DIR = "/ccmusic"
 
 local function get(url)
