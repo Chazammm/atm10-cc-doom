@@ -96,7 +96,12 @@ if file.read(4) ~= "32VD" then file.close() error("Not a 32vid file") end
 
 local width, height, fps, nstreams, flags = ("<HHBBH"):unpack(file.read(8))
 if nstreams ~= 1 then file.close() error("Fast player requires combined-stream 32vid") end
-if bit_band(flags, 3) ~= 1 then file.close() error("Fast player currently requires ANS video compression") end
+local videoCompression = bit_band(flags, 3)
+local directCells = videoCompression == 3 and bit32.btest(flags, 0x4000)
+if videoCompression ~= 1 and not directCells then
+    file.close()
+    error("Fast player requires ANS video or CCV4 direct-cell video")
+end
 local _, nframes, ctype = ("<IIB"):unpack(file.read(9))
 if ctype ~= 0x0C then file.close() error("Fast player requires a combined stream") end
 
@@ -484,8 +489,39 @@ local rowText, rowFg, rowBg = {}, {}, {}
 
 local function decodeFrame(payload)
     local t0 = os.epoch("utc")
-    local nextByte = byteReader(payload)
 
+    if directCells then
+        -- CCV4 direct-cell frame:
+        --   48 bytes RGB palette
+        --   cellCount bytes 5-bit semigraphics character masks
+        --   cellCount bytes packed bg<<4 | fg
+        -- This is intentionally trivial to decode: the expensive optimisation
+        -- happened offline against the original RGB pixels.
+        local expected = 48 + cellCount * 2
+        if #payload ~= expected then
+            error(("Invalid CCV4 frame: expected %d bytes, got %d"):format(expected, #payload))
+        end
+        local palette, screen, fg, bg = {}, {}, {}, {}
+        local p = 1
+        for i = 0, 15 do
+            palette[i] = {payload:byte(p), payload:byte(p + 1), payload:byte(p + 2)}
+            p = p + 3
+        end
+        for i = 1, cellCount do
+            screen[i] = payload:byte(p)
+            p = p + 1
+        end
+        for i = 1, cellCount do
+            local packed = payload:byte(p)
+            p = p + 1
+            fg[i] = bit_band(packed, 15)
+            bg[i] = bit_rshift(packed, 4)
+        end
+        stats.decodeMs = stats.decodeMs + (os.epoch("utc") - t0)
+        return screen, fg, bg, palette
+    end
+
+    local nextByte = byteReader(payload)
     local readScreen = makeANSReader(nextByte, false)
     local screen = readScreen(cellCount)
     local readColors = makeANSReader(nextByte, true)
