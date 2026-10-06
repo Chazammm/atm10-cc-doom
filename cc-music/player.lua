@@ -33,6 +33,7 @@ defineSetting("ccmusic.loop", "all", "string", "Loop mode: all, one, off")
 defineSetting("ccmusic.text_scale", 0.5, "number", "Advanced Monitor text scale")
 defineSetting("ccmusic.chunk_bytes", 0, "number", "DFPWM bytes per chunk; 0 = automatic maximum safe size")
 defineSetting("ccmusic.hq_resampler", true, "boolean", "Use higher-quality 24 kHz -> 48 kHz interpolation")
+defineSetting("ccmusic.legacy_resampler", "sinc8", "string", "24 kHz upsampler: sinc8, cubic, or linear")
 defineSetting("ccmusic.ui_fps", 8, "number", "Maximum UI refresh rate")
 defineSetting("ccmusic.start_track", "Sundress", "string", "Preferred title substring to play first")
 defineSetting("ccmusic.audio_mode", "auto", "string", "Audio routing: auto, stereo, or mono")
@@ -58,6 +59,7 @@ local CONFIG = {
     textScale = tonumber(getSetting("ccmusic.text_scale", 0.5)) or 0.5,
     chunkBytes = math.floor(tonumber(getSetting("ccmusic.chunk_bytes", 0)) or 0),
     hqResampler = getSetting("ccmusic.hq_resampler", true) ~= false,
+    legacyResampler = tostring(getSetting("ccmusic.legacy_resampler", "sinc8")):lower(),
     uiFps = tonumber(getSetting("ccmusic.ui_fps", 8)) or 8,
     startTrack = tostring(getSetting("ccmusic.start_track", "Sundress")),
     audioMode = tostring(getSetting("ccmusic.audio_mode", "auto")):lower(),
@@ -71,6 +73,7 @@ if CONFIG.chunkBytes ~= 0 then CONFIG.chunkBytes = math.max(256, math.min(16384,
 CONFIG.uiFps = math.max(2, math.min(12, CONFIG.uiFps))
 if CONFIG.textScale < 0.5 then CONFIG.textScale = 0.5 end
 if CONFIG.textScale > 5 then CONFIG.textScale = 5 end
+if CONFIG.legacyResampler ~= "sinc8" and CONFIG.legacyResampler ~= "cubic" and CONFIG.legacyResampler ~= "linear" then CONFIG.legacyResampler = "sinc8" end
 if CONFIG.audioMode ~= "auto" and CONFIG.audioMode ~= "stereo" and CONFIG.audioMode ~= "mono" then CONFIG.audioMode = "auto" end
 CONFIG.balance = math.max(-1, math.min(1, CONFIG.balance))
 CONFIG.stereoChunkBytes = math.max(1024, math.min(16384, CONFIG.stereoChunkBytes))
@@ -904,29 +907,57 @@ local function resample48k(samples, sourceRate, context)
     if sourceRate == 24000 then
         local out = {}
         local k = 1
+        local mode = CONFIG.hqResampler and CONFIG.legacyResampler or "linear"
 
-        if CONFIG.hqResampler then
-            -- 4-point cubic interpolation at the half-sample position:
-            -- (-x[-1] + 9*x[0] + 9*x[1] - x[2]) / 16
+        if mode == "sinc8" then
+            -- Blackman-windowed sinc interpolation at the half-sample point.
+            -- The 8-tap design has two zero end taps, so the hot path needs six
+            -- multiplies. It rejects much more 24 kHz imaging than cubic while
+            -- staying cheap enough for real-time CC:Tweaked playback.
             --
-            -- Compared with plain linear interpolation this retains noticeably more
-            -- upper-mid/treble detail from a 24 kHz source while still producing the
-            -- exact 48 kHz stream CC:Tweaked speakers expect. Carry one sample across
-            -- chunks so the filter remains continuous at block boundaries.
+            -- Coefficients are symmetric and sum to 1:
+            --   +0.01151696, -0.09744225, +0.58592529,
+            --   +0.58592529, -0.09744225, +0.01151696
+            local prev2 = (context and context.prev2) or samples[1] or 0
+            local prev1 = (context and context.prev1) or samples[1] or 0
+
+            for i = 1, n do
+                local xm2 = i > 2 and samples[i - 2] or (i == 2 and prev1 or prev2)
+                local xm1 = i > 1 and samples[i - 1] or prev1
+                local x0 = samples[i] or 0
+                local x1 = samples[i + 1] or x0
+                local x2 = samples[i + 2] or x1
+                local x3 = samples[i + 3] or x2
+
+                out[k] = x0
+                out[k + 1] = clampPcm8(
+                    0.01151696 * xm2
+                    - 0.09744225 * xm1
+                    + 0.58592529 * x0
+                    + 0.58592529 * x1
+                    - 0.09744225 * x2
+                    + 0.01151696 * x3
+                )
+                k = k + 2
+            end
+
+            if context then
+                context.prev2 = samples[math.max(1, n - 1)] or prev2
+                context.prev1 = samples[n] or prev1
+            end
+        elseif mode == "cubic" then
             local previous = (context and context.previous) or samples[1] or 0
             for i = 1, n do
                 local xm1 = i > 1 and samples[i - 1] or previous
                 local x0 = samples[i] or 0
                 local x1 = samples[i + 1] or x0
                 local x2 = samples[i + 2] or x1
-
                 out[k] = x0
                 out[k + 1] = clampPcm8((-xm1 + 9 * x0 + 9 * x1 - x2) / 16)
                 k = k + 2
             end
             if context then context.previous = samples[n] or previous end
         else
-            -- Low-CPU fallback.
             for i = 1, n do
                 local a = samples[i] or 0
                 local b = samples[i + 1] or a
@@ -1794,7 +1825,11 @@ local function renderFrame()
 
     local rateBadge = state.sourceRate > 0 and (tostring(math.floor(state.sourceRate / 1000 + 0.5)) .. "k") or "--"
     local audioBadge = state.activeAudioMode .. " " .. rateBadge
-    if state.audioPassthrough then audioBadge = audioBadge .. " DIRECT" end
+    if state.audioPassthrough then
+        audioBadge = audioBadge .. " DIRECT"
+    elseif state.sourceRate == 24000 then
+        audioBadge = audioBadge .. " " .. CONFIG.legacyResampler:upper()
+    end
     local statusRight = string.format("%s  %d remote  %d spk", audioBadge, activeRemoteCount(), #state.speakers)
     c:text(math.max(1, w - #statusRight), 1, statusRight, colors.white, colors.blue)
     if state.current then
