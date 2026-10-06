@@ -595,29 +595,65 @@ end
 local function readSqshHeader(handle)
     local magic = handle.readLine()
     if magic then magic = magic:gsub("\r$", "") end
-    if magic ~= "SQSH1" then return nil, "Not an SQSH1 file" end
 
-    local rate = parseHeaderLine(handle.readLine(), "rate")
-    local lyricBytes = parseHeaderLine(handle.readLine(), "lyrics")
-    local audioBytes = parseHeaderLine(handle.readLine(), "audio")
-    handle.readLine() -- blank separator line
+    if magic == "SQSH1" then
+        local rate = parseHeaderLine(handle.readLine(), "rate")
+        local lyricBytes = parseHeaderLine(handle.readLine(), "lyrics")
+        local audioBytes = parseHeaderLine(handle.readLine(), "audio")
+        handle.readLine() -- blank separator line
 
-    if not rate or rate < 1000 or rate > 48000 then return nil, "Invalid SQSH sample rate" end
-    if not lyricBytes or lyricBytes < 0 then return nil, "Invalid SQSH lyrics size" end
-    if not audioBytes or audioBytes < 1 then return nil, "Invalid SQSH audio size" end
+        if not rate or rate < 1000 or rate > 48000 then return nil, "Invalid SQSH1 sample rate" end
+        if not lyricBytes or lyricBytes < 0 then return nil, "Invalid SQSH1 lyrics size" end
+        if not audioBytes or audioBytes < 1 then return nil, "Invalid SQSH1 audio size" end
 
-    local lyricsRaw = ""
-    if lyricBytes > 0 then
-        lyricsRaw = readExact(handle, lyricBytes)
-        if not lyricsRaw then return nil, "Truncated SQSH lyrics block" end
+        local lyricsRaw = ""
+        if lyricBytes > 0 then
+            lyricsRaw = readExact(handle, lyricBytes)
+            if not lyricsRaw then return nil, "Truncated SQSH1 lyrics block" end
+        end
+
+        return {
+            format = "SQSH1",
+            channels = 1,
+            rate = rate,
+            lyricBytes = lyricBytes,
+            audioBytes = audioBytes,
+            lyricsRaw = lyricsRaw,
+        }
+    elseif magic == "SQSH2" then
+        -- Streaming stereo format. Audio bytes are per channel and stored as
+        -- alternating fixed-size LEFT/RIGHT DFPWM blocks after the lyrics.
+        local rate = parseHeaderLine(handle.readLine(), "rate")
+        local channels = parseHeaderLine(handle.readLine(), "channels")
+        local lyricBytes = parseHeaderLine(handle.readLine(), "lyrics")
+        local audioBytes = parseHeaderLine(handle.readLine(), "audio")
+        local blockBytes = parseHeaderLine(handle.readLine(), "block")
+        handle.readLine() -- blank separator line
+
+        if not rate or rate < 1000 or rate > 48000 then return nil, "Invalid SQSH2 sample rate" end
+        if channels ~= 2 then return nil, "SQSH2 currently requires exactly 2 channels" end
+        if not lyricBytes or lyricBytes < 0 then return nil, "Invalid SQSH2 lyrics size" end
+        if not audioBytes or audioBytes < 1 then return nil, "Invalid SQSH2 audio size" end
+        if not blockBytes or blockBytes < 256 or blockBytes > 16384 then return nil, "Invalid SQSH2 block size" end
+
+        local lyricsRaw = ""
+        if lyricBytes > 0 then
+            lyricsRaw = readExact(handle, lyricBytes)
+            if not lyricsRaw then return nil, "Truncated SQSH2 lyrics block" end
+        end
+
+        return {
+            format = "SQSH2",
+            channels = 2,
+            rate = rate,
+            lyricBytes = lyricBytes,
+            audioBytes = audioBytes,
+            blockBytes = blockBytes,
+            lyricsRaw = lyricsRaw,
+        }
     end
 
-    return {
-        rate = rate,
-        lyricBytes = lyricBytes,
-        audioBytes = audioBytes,
-        lyricsRaw = lyricsRaw,
-    }
+    return nil, "Not an SQSH1/SQSH2 file"
 end
 
 local function parseLyrics(raw)
@@ -746,6 +782,47 @@ local function clampPcm8(v)
     if v < -128 then return -128 end
     if v >= 0 then return math.floor(v + 0.5) end
     return math.ceil(v - 0.5)
+end
+
+-- For native 48 kHz DFPWM, feeding the original one-bit decisions back into
+-- speaker.playAudio as -128/+127 preserves the stored DFPWM stream through
+-- CC:Tweaked's server-side encoder. We still decode a copy for the visualizer.
+local DFPWM_BITS = {}
+for b = 0, 255 do
+    local row = {}
+    for j = 0, 7 do
+        row[j + 1] = bit32.band(bit32.rshift(b, j), 1) ~= 0 and 127 or -128
+    end
+    DFPWM_BITS[b] = row
+end
+
+local function makeDfpwmPassthrough()
+    local out, oldLength = {}, 0
+    return function(data)
+        local n, at = #data * 8, 1
+        for i = 1, #data do
+            table.move(DFPWM_BITS[data:byte(i)], 1, 8, at, out)
+            at = at + 8
+        end
+        if oldLength > n then
+            for i = n + 1, oldLength do out[i] = nil end
+        end
+        oldLength = n
+        return out
+    end
+end
+
+local function makeStereoMixer()
+    local out, oldLength = {}, 0
+    return function(left, right)
+        local n = math.min(#left, #right)
+        for i = 1, n do out[i] = clampPcm8(((left[i] or 0) + (right[i] or 0)) * 0.5) end
+        if oldLength > n then
+            for i = n + 1, oldLength do out[i] = nil end
+        end
+        oldLength = n
+        return out
+    end
 end
 
 local function resample48k(samples, sourceRate, context)
@@ -891,6 +968,127 @@ local function tryStartSegment(segment, generation)
         end
     end
     return false
+end
+
+local function stereoRouteAvailable()
+    return state.leftSpeaker and state.rightSpeaker
+        and state.leftSpeakerName and state.rightSpeakerName
+        and state.leftSpeakerName ~= state.rightSpeakerName
+end
+
+local function stereoVolumes()
+    local left, right = state.volume, state.volume
+    if CONFIG.balance > 0 then left = left * (1 - CONFIG.balance)
+    elseif CONFIG.balance < 0 then right = right * (1 + CONFIG.balance) end
+    return left, right
+end
+
+local function tryStartStereoSegment(leftSegment, rightSegment, generation)
+    local n = math.min(#leftSegment, #rightSegment)
+    if n == 0 then return {} end
+
+    while state.running and generation == state.generation do
+        while state.paused and state.running and generation == state.generation do
+            local ev = os.pullEventRaw()
+            if ev == "ccmusic_shutdown" then return false end
+        end
+        if not state.running or generation ~= state.generation then return false end
+        if not stereoRouteAvailable() then return false end
+
+        local leftVolume, rightVolume = stereoVolumes()
+        local okL, acceptedL, okR, acceptedR
+        parallel.waitForAll(
+            function() okL, acceptedL = pcall(state.leftSpeaker.playAudio, leftSegment, leftVolume) end,
+            function() okR, acceptedR = pcall(state.rightSpeaker.playAudio, rightSegment, rightVolume) end
+        )
+
+        if okL and acceptedL and okR and acceptedR then
+            state.flight = {
+                startedMs = nowMs(),
+                length = n,
+                interruptMs = nil,
+                interruptReason = nil,
+            }
+            return { state.leftSpeakerName, state.rightSpeakerName }
+        end
+
+        -- If one side accepted before the other reported busy, stop both so
+        -- the next retry begins on the same sample boundary.
+        stopSpeakers()
+        local timer = os.startTimer(0.04)
+        while state.running and generation == state.generation do
+            local ev, id = os.pullEventRaw()
+            if ev == "timer" and id == timer then break end
+            if ev == "ccmusic_wake" then break end
+            if ev == "ccmusic_shutdown" then return false end
+        end
+    end
+    return false
+end
+
+local function playStereoPcmBlock(leftPcm, rightPcm, generation)
+    local total = math.min(#leftPcm, #rightPcm)
+    local offset = 1
+    while offset <= total and state.running and generation == state.generation do
+        while state.paused and state.running and generation == state.generation do
+            local ev = os.pullEventRaw()
+            if ev == "ccmusic_shutdown" then return false end
+        end
+        if generation ~= state.generation or not state.running then return false end
+
+        local leftSegment = offset == 1 and leftPcm or sliceSamples(leftPcm, offset)
+        local rightSegment = offset == 1 and rightPcm or sliceSamples(rightPcm, offset)
+        local interruptVersion = state.audioInterrupt
+        local waitingNames = tryStartStereoSegment(leftSegment, rightSegment, generation)
+        if type(waitingNames) ~= "table" then return false end
+
+        state.loading = false
+        state.error = nil
+        local waiting = {}
+        for i = 1, #waitingNames do waiting[waitingNames[i]] = true end
+        local naturalDone, interrupted = false, false
+
+        while state.running and generation == state.generation do
+            if next(waiting) == nil then naturalDone = true; break end
+            if state.audioInterrupt ~= interruptVersion or state.paused then interrupted = true; break end
+
+            local ev, a = os.pullEventRaw()
+            if ev == "speaker_audio_empty" then
+                waiting[a] = nil
+            elseif ev == "peripheral_detach" then
+                waiting[a] = nil
+            elseif ev == "ccmusic_wake" then
+                if state.audioInterrupt ~= interruptVersion or state.paused then interrupted = true; break end
+            elseif ev == "ccmusic_shutdown" then
+                return false
+            end
+        end
+
+        if generation ~= state.generation or not state.running then
+            state.flight = nil
+            return false
+        end
+
+        local f = state.flight
+        if naturalDone then
+            local length = math.min(#leftSegment, #rightSegment)
+            state.playedSamples = state.playedSamples + length
+            state.flight = nil
+            offset = total + 1
+        elseif interrupted then
+            local stopAt = f and (f.interruptMs or nowMs()) or nowMs()
+            local consumed = f and clamp(math.floor((stopAt - f.startedMs) * 48), 0, f.length) or 0
+            if consumed > 0 then
+                state.playedSamples = state.playedSamples + consumed
+                offset = offset + consumed
+            end
+            state.flight = nil
+        else
+            state.flight = nil
+            return false
+        end
+    end
+    return generation == state.generation and state.running
 end
 
 local function playPcmBlock(pcm, generation)
