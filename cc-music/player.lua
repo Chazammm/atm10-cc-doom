@@ -812,6 +812,69 @@ local function makeDfpwmPassthrough()
     end
 end
 
+local function makeDfpwmTailDecoder(tailCount)
+    -- CC:Tweaked-compatible predictor, but retain only the last few decoded
+    -- samples needed by the visualizer. Native 48 kHz passthrough therefore
+    -- avoids allocating a 65k/131k-sample PCM table for every audio block.
+    tailCount = math.max(32, math.floor(tailCount or 384))
+    local floor, byte = math.floor, string.byte
+    local PREC, PREC_POW, PREC_POW_HALF = 10, 1024, 512
+    local STRENGTH_MIN = 8
+    local charge, strength, predictorPreviousBit = 0, 0, false
+    local lowPassCharge, previousCharge, previousBit = 0, 0, false
+    local ring, ringAt, seen = {}, 1, 0
+
+    local function predictor(currentBit)
+        local target = currentBit and 127 or -128
+        local nextCharge = charge + floor((strength * (target - charge) + PREC_POW_HALF) / PREC_POW)
+        if nextCharge == charge and nextCharge ~= target then
+            nextCharge = nextCharge + (currentBit and 1 or -1)
+        end
+        local z = currentBit == predictorPreviousBit and PREC_POW - 1 or 0
+        local nextStrength = strength
+        if nextStrength ~= z then
+            nextStrength = nextStrength + (currentBit == predictorPreviousBit and 1 or -1)
+        end
+        if nextStrength < STRENGTH_MIN then nextStrength = STRENGTH_MIN end
+        charge, strength, predictorPreviousBit = nextCharge, nextStrength, currentBit
+        return charge
+    end
+
+    return function(input)
+        for i = 1, #input do
+            local inputByte = byte(input, i)
+            for _ = 1, 8 do
+                local currentBit = bit32.band(inputByte, 1) ~= 0
+                local currentCharge = predictor(currentBit)
+                local antijerk = currentCharge
+                if currentBit ~= previousBit then
+                    antijerk = floor((currentCharge + previousCharge + 1) / 2)
+                end
+                previousCharge, previousBit = currentCharge, currentBit
+                lowPassCharge = lowPassCharge + floor(((antijerk - lowPassCharge) * 140 + 0x80) / 256)
+                ring[ringAt] = lowPassCharge
+                ringAt = ringAt + 1
+                if ringAt > tailCount then ringAt = 1 end
+                seen = math.min(tailCount, seen + 1)
+                inputByte = bit32.rshift(inputByte, 1)
+            end
+        end
+
+        local out = {}
+        if seen < tailCount then
+            for i = 1, seen do out[i] = ring[i] end
+        else
+            local p = ringAt
+            for i = 1, tailCount do
+                out[i] = ring[p]
+                p = p + 1
+                if p > tailCount then p = 1 end
+            end
+        end
+        return out
+    end
+end
+
 local function makeStereoMixer()
     local out, oldLength = {}, 0
     return function(left, right)
@@ -1245,6 +1308,7 @@ local function audioLoop()
 
                     if header.channels == 2 then
                         local leftDecoder, rightDecoder = dfpwm.make_decoder(), dfpwm.make_decoder()
+                        local leftTail, rightTail = makeDfpwmTailDecoder(384), makeDfpwmTailDecoder(384)
                         local leftResample, rightResample = {}, {}
                         local leftPassthrough, rightPassthrough = makeDfpwmPassthrough(), makeDfpwmPassthrough()
                         local mixStereo = makeStereoMixer()
@@ -1265,20 +1329,28 @@ local function audioLoop()
                             end
                             remaining = remaining - want
 
-                            local okL, decodedL = pcall(leftDecoder, leftChunk)
-                            local okR, decodedR = pcall(rightDecoder, rightChunk)
-                            if not okL or not okR or type(decodedL) ~= "table" or type(decodedR) ~= "table" then
-                                state.error = "Stereo DFPWM decode failed"
-                                break
+                            local wantStereo = CONFIG.audioMode ~= "mono" and stereoRouteAvailable()
+                            local directStereo = wantStereo and CONFIG.passthrough48k and header.rate == 48000
+                            local decodedL, decodedR
+
+                            if directStereo then
+                                decodedL, decodedR = leftTail(leftChunk), rightTail(rightChunk)
+                            else
+                                local okL, valueL = pcall(leftDecoder, leftChunk)
+                                local okR, valueR = pcall(rightDecoder, rightChunk)
+                                if not okL or not okR or type(valueL) ~= "table" or type(valueR) ~= "table" then
+                                    state.error = "Stereo DFPWM decode failed"
+                                    break
+                                end
+                                decodedL, decodedR = valueL, valueR
                             end
 
                             local analysisMono = mixStereo(decodedL, decodedR)
                             analyzeAudio(analysisMono, header.rate)
 
-                            local wantStereo = CONFIG.audioMode ~= "mono" and stereoRouteAvailable()
                             if wantStereo then
                                 local leftPcm, rightPcm
-                                if CONFIG.passthrough48k and header.rate == 48000 then
+                                if directStereo then
                                     leftPcm, rightPcm = leftPassthrough(leftChunk), rightPassthrough(rightChunk)
                                     state.audioPassthrough = true
                                 else
@@ -1299,6 +1371,7 @@ local function audioLoop()
                         end
                     else
                         local decoder = dfpwm.make_decoder()
+                        local tailDecoder = makeDfpwmTailDecoder(384)
                         local passthrough = makeDfpwmPassthrough()
                         local resampleContext = {}
 
@@ -1317,15 +1390,22 @@ local function audioLoop()
                             end
                             remaining = remaining - #chunk
 
-                            local okDecode, decoded = pcall(decoder, chunk)
-                            if not okDecode or type(decoded) ~= "table" then
-                                state.error = "DFPWM decode failed"
-                                break
+                            local directMono = CONFIG.passthrough48k and header.rate == 48000
+                            local decoded
+                            if directMono then
+                                decoded = tailDecoder(chunk)
+                            else
+                                local okDecode, value = pcall(decoder, chunk)
+                                if not okDecode or type(value) ~= "table" then
+                                    state.error = "DFPWM decode failed"
+                                    break
+                                end
+                                decoded = value
                             end
 
                             analyzeAudio(decoded, header.rate)
                             local pcm
-                            if CONFIG.passthrough48k and header.rate == 48000 then
+                            if directMono then
                                 pcm = passthrough(chunk)
                                 state.audioPassthrough = true
                             else
