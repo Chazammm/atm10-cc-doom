@@ -15,8 +15,37 @@ Set-StrictMode -Version Latest
 
 function Need-Cmd([string]$Name) {
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
-    if (-not $cmd) { throw "Missing '$Name' in PATH." }
-    return $cmd.Source
+    if ($cmd) { return $cmd.Source }
+
+    # WinGet sometimes installs FFmpeg successfully but the current PowerShell
+    # session does not see the newly added PATH entry. Resolve the executable
+    # directly from WinGet's package/link directories instead.
+    if ($Name -eq "ffmpeg" -or $Name -eq "ffprobe") {
+        $candidates = @()
+
+        if ($env:LOCALAPPDATA) {
+            $link = Join-Path $env:LOCALAPPDATA ("Microsoft\WinGet\Links\" + $Name + ".exe")
+            if (Test-Path $link -PathType Leaf) { $candidates += (Get-Item $link) }
+
+            $packages = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages"
+            if (Test-Path $packages -PathType Container) {
+                $candidates += @(Get-ChildItem -Path $packages -Filter ($Name + ".exe") -File -Recurse -ErrorAction SilentlyContinue)
+            }
+        }
+
+        if ($env:ProgramFiles) {
+            $candidates += @(Get-ChildItem -Path $env:ProgramFiles -Filter ($Name + ".exe") -File -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match "ffmpeg|Gyan" })
+        }
+
+        $found = $candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($found) {
+            Write-Host ("Found {0} outside PATH: {1}" -f $Name, $found.FullName) -ForegroundColor Yellow
+            return $found.FullName
+        }
+    }
+
+    throw "Missing '$Name'. Install it, or reopen PowerShell if it was just installed."
 }
 
 function Run([string]$Exe, [string[]]$Args) {
@@ -52,6 +81,12 @@ $python = Need-Cmd "python"
 $ffmpeg = Need-Cmd "ffmpeg"
 $ffprobe = Need-Cmd "ffprobe"
 $gh = Need-Cmd "gh"
+
+# Make the resolved FFmpeg tools visible to the Python converter as well.
+$ffmpegDir = Split-Path $ffmpeg -Parent
+$ffprobeDir = Split-Path $ffprobe -Parent
+$extraPath = @($ffmpegDir, $ffprobeDir) | Select-Object -Unique
+$env:PATH = (($extraPath -join [IO.Path]::PathSeparator) + [IO.Path]::PathSeparator + $env:PATH)
 
 Write-Host "Checking GitHub login..." -ForegroundColor Cyan
 & $gh auth status *> $null
