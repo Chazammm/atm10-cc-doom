@@ -1,6 +1,6 @@
 -- CC-Music one-line installer for CC:Tweaked / ATM10 8.2
 local BASE = "https://raw.githubusercontent.com/Chazammm/atm10-cc-doom/cc-music-player/cc-music/"
-local CACHE = "?v=3.0.0"
+local CACHE = "?v=3.0.1"
 local DIR = "/ccmusic"
 
 local function get(url)
@@ -18,6 +18,7 @@ local files = {
   {"player.lua", DIR .. "/player.lua"},
   {"remote.lua", DIR .. "/remote.lua"},
   {"stereosetup.lua", DIR .. "/stereosetup.lua"},
+  {"diagnostics.lua", DIR .. "/diagnostics.lua"},
   {"README.md", DIR .. "/README.md"},
 }
 
@@ -56,10 +57,23 @@ local sf = assert(fs.open("/music-stereo.lua", "w"))
 sf.write(stereoLauncher)
 sf.close()
 
+local infoLauncher = [[
+local path = "/ccmusic/diagnostics.lua"
+if not fs.exists(path) then
+  printError("CC-Music diagnostics are not installed. Run the installer again.")
+  return
+end
+shell.run(path, ...)
+]]
+local inf = assert(fs.open("/music-info.lua", "w"))
+inf.write(infoLauncher)
+inf.close()
+
 print("")
 print("CC-Music 3.0 installed.")
 print("Run: music")
 print("Stereo setup: music-stereo")
+print("Diagnostics: music-info")
 print("Remote: /ccmusic/remote.lua")
 print("Optimal monitor: 8 wide x 6 high at text scale 0.5 (164x81 cells)")
 print("Tracks are streamed from Di33le/CC-Music on GitHub.")
