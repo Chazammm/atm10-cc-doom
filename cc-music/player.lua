@@ -563,6 +563,8 @@ local function togglePause()
     if state.current then setPaused(not state.paused) end
 end
 
+local currentPositionSamples, currentPositionSeconds
+
 local function requestSeek(seconds)
     if not state.current then return end
     local duration = tonumber(state.current.duration) or 0
@@ -1345,7 +1347,7 @@ local function sliceSamples(samples, first)
     return out
 end
 
-local function currentPositionSamples()
+currentPositionSamples = function()
     local base = state.playedSamples
     local f = state.flight
     if f then
@@ -1359,7 +1361,7 @@ local function currentPositionSamples()
     return base
 end
 
-local function currentPositionSeconds()
+currentPositionSeconds = function()
     return currentPositionSamples() / 48000
 end
 
