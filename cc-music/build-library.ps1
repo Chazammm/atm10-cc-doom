@@ -428,7 +428,12 @@ try {
     $manifestJson = $manifest | ConvertTo-Json -Depth 8
     [IO.File]::WriteAllText($manifestPath, $manifestJson, (New-Object Text.UTF8Encoding($false)))
 
-    $total = ($tracks | Measure-Object -Property size -Sum).Sum
+    $total = [int64]0
+    foreach ($trackEntry in $tracks) {
+        if ($trackEntry.Contains("size")) {
+            $total += [int64]$trackEntry["size"]
+        }
+    }
     Write-Host ""
     Write-Host ("Converted: {0} track(s), {1:N1} MiB total" -f $tracks.Count, ($total/1MB)) -ForegroundColor Green
 
