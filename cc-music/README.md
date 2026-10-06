@@ -1,4 +1,4 @@
-# CC-Music 3.5.1 for ATM10 8.2 / CC:Tweaked
+# CC-Music 3.6.0 for ATM10 8.2 / CC:Tweaked
 
 A large-monitor music player for CC:Tweaked, built around the `Di33le/CC-Music` library and extended with true stereo support.
 
@@ -89,7 +89,7 @@ Legacy format:
 
 ### SQSH2
 
-CC-Music 3.5.1 stereo format:
+CC-Music 3.6.0 stereo format:
 
 - two independent DFPWM channels;
 - 48 kHz;
@@ -174,7 +174,7 @@ ccmusic.chunk_bytes         0
 ccmusic.hq_resampler        true
 ccmusic.legacy_resampler    sinc8
 ccmusic.ui_fps              12
-ccmusic.viz_slice_bytes      512
+ccmusic.viz_slice_bytes      1024
 ccmusic.viz_mode             classic
 ccmusic.start_track         Sundress
 
@@ -298,3 +298,26 @@ SQSH2 seeking is aligned to a valid interleaved audio-block boundary so LEFT/RIG
 - The Rednet remote shows favorite/manual-queue status and `B` toggles the current favorite.
 
 Resume, favorites and the manual queue are player-side features and do not change the SQSH2 48 kHz DIRECT audio path.
+
+
+## Performance hardening and new visualizers in 3.6
+
+Audio smoothness is now prioritised more aggressively without giving up the 12 FPS UI.
+
+- The default DFPWM visualizer/audio scheduling slice is now 1024 bytes at 48 kHz (~171 ms), doubling the per-call speaker buffer versus 3.5.x.
+- CC-Music measures render cost continuously. If a frame becomes expensive, it temporarily enters `SAFE` mode: UI rendering drops to at most 8 FPS and audio slices grow again for more playback headroom.
+- Paused playback and the settings screen also render at a reduced rate because there is no benefit in spending the full frame budget there.
+- Spectral work is mode-aware: CLASSIC/METER/ORBIT use one mono spectrum analysis, MIRROR uses two true stereo analyses, while WAVE and VU skip the expensive spectrum pass entirely.
+- Dirty-row monitor blitting remains enabled.
+
+Visualizer cycle:
+`CLASSIC -> MIRROR -> METER -> WAVE -> ORBIT -> VU -> CLASSIC`
+
+New modes:
+- `WAVE`: dual stereo oscilloscope with independent L/R zero lines.
+- `ORBIT`: radial frequency spectrum around a bass-reactive core.
+- `VU`: large L/R level meters plus stereo-balance indicator. This is also the cheapest visualizer mode computationally.
+
+The audio format and output path are unchanged: SQSH2 48 kHz stereo still uses DIRECT playback.
+
+CC:Tweaked speakers buffer a single `playAudio` call at a time, so larger chunks are generally more resistant to server/computer lag. The 3.6 defaults are a compromise between that recommendation and responsive visualization.
