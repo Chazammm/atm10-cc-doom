@@ -10,6 +10,7 @@ local files = {
   ["videobench.lua"] = "/videobench.lua",
   ["videobench20.lua"] = "/videobench20.lua",
   ["stereosetup.lua"] = "/stereosetup.lua",
+  ["v4test.lua"] = "/v4test.lua",
   ["lib/32vid-player-mini.lua"] = "/video-lib/32vid-player-mini.lua",
   ["lib/32vid-player-fast.lua"] = "/video-lib/32vid-player-fast.lua",
   ["lib/v3-index.lua"] = "/video-lib/v3-index.lua",
@@ -49,4 +50,5 @@ print("Run: agartha-v3 resume -- resume saved position")
 print("Run: videobench     -- normal V2 benchmark")
 print("Run: videobench20   -- 20 FPS ceiling stress test")
 print("Run: stereosetup    -- optional true stereo with 2 speakers")
+print("Run: v4test         -- 60s experimental image-quality sample")
 print("Optional diagnostics: settings set musicvideo.stats true")
