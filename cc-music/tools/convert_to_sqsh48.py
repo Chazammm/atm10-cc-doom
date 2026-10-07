@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CC-Music 3.0 converter.
+CC-Music 3.7 converter.
 
 Converts legally obtained source audio to:
   * SQSH1: 48 kHz mono DFPWM for mono sources (or --mono)
@@ -20,6 +20,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -58,6 +59,56 @@ def probe_channels(ffprobe: str, src: Path) -> int:
         return max(1, int(p.stdout.strip()))
     except ValueError as exc:
         raise RuntimeError("Could not determine source channel count") from exc
+
+
+def probe_metadata(ffprobe: str, src: Path) -> dict[str, object]:
+    p = run([
+        ffprobe, "-v", "error", "-select_streams", "a:0",
+        "-show_entries",
+        "format=duration:format_tags=title,artist,album:stream_tags=title,artist,album",
+        "-of", "json",
+        str(src),
+    ])
+    if p.returncode != 0:
+        raise RuntimeError(p.stderr.strip() or "ffprobe metadata probe failed")
+
+    try:
+        data = json.loads(p.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Could not parse ffprobe metadata") from exc
+
+    fmt = data.get("format") if isinstance(data.get("format"), dict) else {}
+    fmt_tags = fmt.get("tags") if isinstance(fmt.get("tags"), dict) else {}
+    streams = data.get("streams") if isinstance(data.get("streams"), list) else []
+    stream_tags: dict[str, object] = {}
+    if streams and isinstance(streams[0], dict) and isinstance(streams[0].get("tags"), dict):
+        stream_tags = streams[0]["tags"]
+
+    def tag(name: str) -> str:
+        value = fmt_tags.get(name) or fmt_tags.get(name.upper()) or stream_tags.get(name) or stream_tags.get(name.upper())
+        return str(value).strip() if value is not None else ""
+
+    try:
+        duration = float(fmt.get("duration") or 0)
+    except (TypeError, ValueError):
+        duration = 0.0
+
+    return {
+        "title": tag("title") or src.stem,
+        "artist": tag("artist"),
+        "album": tag("album"),
+        "duration": max(0.0, duration),
+        "source_file": src.name,
+    }
+
+
+def write_metadata_sidecar(dst: Path, metadata: dict[str, object]) -> Path:
+    sidecar = dst.with_name(f"{dst.stem}.ccmeta.json")
+    sidecar.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return sidecar
 
 
 def base_filter() -> str:
@@ -308,7 +359,7 @@ def convert_one(
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Convert source audio to CC-Music 3.0 SQSH1/SQSH2 at native 48 kHz DFPWM."
+        description="Convert source audio to CC-Music 3.7 SQSH1/SQSH2 at native 48 kHz DFPWM."
     )
     ap.add_argument("input", type=Path, help="Folder containing source audio")
     ap.add_argument("--output", "-o", type=Path, default=Path("sqsh48"), help="Output folder")
@@ -349,11 +400,20 @@ def main() -> int:
 
         print(f"[{idx:>3}/{len(sources)}] ENCODE {src.name}")
         try:
+            metadata = probe_metadata(ffprobe, src)
             mode, bytes_per_channel, lyrics, paths = convert_one(
                 ffmpeg, ffprobe, src, dst, args.normalize,
                 args.mono, args.force_stereo, args.block, args.max_file_bytes,
             )
             seconds = bytes_per_channel * 8 / 48000
+            metadata.update({
+                "encoded_format": mode.split()[0],
+                "encoded_rate": 48000,
+                "encoded_channels": 2 if mode.startswith("SQSH2") else 1,
+                "encoded_duration": seconds,
+                "has_embedded_lrc": lyrics > 0,
+            })
+            write_metadata_sidecar(dst, metadata)
             print(
                 f"              OK -> {dst} | {mode} | {seconds:.1f}s | "
                 f"{bytes_per_channel/1024:.1f} KiB/channel"
@@ -369,7 +429,7 @@ def main() -> int:
     print(f"Finished: {ok} converted, {failed} failed.")
     if failed:
         return 1
-    print("CC-Music 3.0 plays SQSH2 through the configured LEFT/RIGHT speaker pair.")
+    print("CC-Music 3.7 plays SQSH2 through the configured LEFT/RIGHT speaker pair.")
     return 0
 
 
