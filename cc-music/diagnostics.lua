@@ -1,7 +1,7 @@
--- CC-Music 3.7 diagnostics / setup report.
+-- CC-Music 3.7.1 diagnostics / setup report.
 local function yn(v) return v and "YES" or "NO" end
 
-print("CC-Music 3.7.0 diagnostics")
+print("CC-Music 3.7.1 diagnostics")
 print("------------------------")
 
 local monitor, monitorName = peripheral.find("monitor", function(name) monitorName = name; return true end)
@@ -40,7 +40,7 @@ print("48k passthrough: " .. yn(settings.get("ccmusic.passthrough_48k") ~= false
 
 write("GitHub library HTTP: ")
 local h, err = http.get("https://api.github.com/repos/Chazammm/atm10-cc-doom/releases/tags/cc-music-library-v1", {
-    ["User-Agent"] = "CC-Music-Diagnostics/3.7",
+    ["User-Agent"] = "CC-Music-Diagnostics/3.7.1",
     ["Accept"] = "application/vnd.github+json",
 })
 if h then
@@ -94,6 +94,45 @@ print("")
 print("Lyrics:")
 print("  Online fallback : " .. yn(settings.get("ccmusic.lyrics_online") ~= false))
 print("  Cache folder    : /ccmusic/lyrics")
+
+local lyricsTestUrl = "https://lrclib.net/api/search?q=Still%20Alive"
+if http and http.checkURL then
+    local okCheck, allowed, reason = pcall(http.checkURL, lyricsTestUrl)
+    if okCheck then
+        print("  LRCLIB URL      : " .. (allowed and "ALLOWED" or ("BLOCKED - " .. tostring(reason or "?"))))
+    else
+        print("  LRCLIB URL      : CHECK FAILED - " .. tostring(allowed))
+    end
+end
+
+if http and http.get then
+    write("  LRCLIB HTTP     : ")
+    local okReq, lh, lerr, lfail = pcall(http.get, lyricsTestUrl, {
+        ["User-Agent"] = "CC-Music-Diagnostics 3.7.1",
+        ["Accept"] = "application/json",
+    }, false)
+    if not okReq then
+        print("ERROR - " .. tostring(lh))
+    elseif lh then
+        local code = lh.getResponseCode and lh.getResponseCode() or 200
+        local body = lh.readAll()
+        lh.close()
+        local okJson, parsed = pcall(textutils.unserializeJSON, body)
+        if code == 200 and okJson and type(parsed) == "table" then
+            print("OK (HTTP 200, JSON)")
+        else
+            print("FAILED (HTTP " .. tostring(code) .. ")")
+        end
+    else
+        local code = nil
+        if lfail and lfail.getResponseCode then
+            local okCode, value = pcall(lfail.getResponseCode)
+            if okCode then code = value end
+            pcall(lfail.close)
+        end
+        print((code and ("HTTP " .. tostring(code) .. " - ") or "FAILED - ") .. tostring(lerr or "request failed"))
+    end
+end
 
 local remoteIds = tostring(settings.get("ccmusic.remote_ids") or "")
 if remoteIds == "" then
