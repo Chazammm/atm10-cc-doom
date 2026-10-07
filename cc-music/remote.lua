@@ -1,6 +1,6 @@
 -- CC-Music Pocket/Computer Remote
 local PROTOCOL = "ccmusic.v2"
-local VERSION = "3.7.0"
+local VERSION = "3.7.1"
 
 local function nowMs()
     if os.epoch then return os.epoch("utc") end
