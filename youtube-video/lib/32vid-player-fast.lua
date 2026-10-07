@@ -115,6 +115,8 @@ local adaptiveEnabled = settings.get("musicvideo.adaptive_fps")
 if adaptiveEnabled == nil then adaptiveEnabled = true end
 local fpsOverride = tonumber(settings.get("musicvideo.fps_override"))
 local muteAudio = settings.get("musicvideo.mute") == true
+local segmentPart = tonumber(settings.get("musicvideo.segment_part"))
+local segmentCount = tonumber(settings.get("musicvideo.segment_count"))
 
 -- A playlist can keep one media clock across multiple HTTP files. This makes
 -- part boundaries behave as one continuous movie instead of re-syncing A/V.
@@ -259,6 +261,7 @@ local paused, pauseStarted = false, nil
 local osdVisible, osdUntil = false, 0
 local osdDark, osdLight = 0, 15
 local forceRedraw = false
+local osdBarX1, osdBarX2 = nil, nil
 
 local function stopSpeakers()
     local seen = {}
@@ -288,13 +291,32 @@ local function drawOSD()
     if not osdVisible and not paused then return end
     local total = totalFrames or math.max(currentGlobalFrame + 1, 1)
     local ratio = math.max(0, math.min(1, currentGlobalFrame / math.max(1, total - 1)))
-    local barWidth = math.max(10, tw - 73)
-    local filled = math.floor(barWidth * ratio + 0.5)
-    local bar = string.rep("=", filled) .. string.rep("-", barWidth - filled)
     local mode = stereoActive and hasStereoAudio and "ST" or "MO"
-    local line1 = fitLine(("%s/%s [%s] %s %3d%% drop:%d adapt:%d"):format(
-        formatTime(currentGlobalFrame), formatTime(total), bar, mode,
-        math.floor(volume * 100 + 0.5), stats.dropped, stats.adaptiveSkipped))
+    local partLabel = ""
+    if segmentPart and segmentCount then
+        partLabel = (" P%d/%d"):format(segmentPart, segmentCount)
+    end
+
+    -- Row 1 is one continuous timeline for the ENTIRE movie, not just the
+    -- currently-open HTTP part. The V4 controller converts a touched global
+    -- frame back into the correct release part/local frame.
+    local leftTime = formatTime(currentGlobalFrame)
+    local rightTime = formatTime(total)
+    local prefix = leftTime .. " ["
+    local suffix = ("] %s%s %3d%% d:%d a:%d"):format(
+        mode, partLabel, math.floor(volume * 100 + 0.5),
+        stats.dropped, stats.adaptiveSkipped)
+
+    local barWidth = math.max(20, tw - #prefix - #rightTime - 1 - #suffix)
+    local playhead = math.floor((barWidth - 1) * ratio + 0.5) + 1
+    local bar = string.rep("=", math.max(0, playhead - 1))
+        .. "|"
+        .. string.rep("-", math.max(0, barWidth - playhead))
+
+    osdBarX1 = #prefix + 1
+    osdBarX2 = osdBarX1 + barWidth - 1
+    local line1 = fitLine(prefix .. bar .. "] " .. rightTime .. " " .. suffix:sub(3))
+
     local playLabel = paused and "PLAY" or "PAUSE"
     local labels = {"<10s", playLabel, "+10s", "VOL-", "VOL+", "INFO", "STOP"}
     local pieces = {}
@@ -358,12 +380,35 @@ end
 local function handleTouch(_, x, y)
     if not touchEnabled then return end
     if not x or not y then return end
-    if not osdVisible and not paused then showOSD() return end
+
+    -- First tap reveals the OSD. This prevents an accidental seek while the
+    -- movie itself is being touched. A second tap on the timeline performs
+    -- the seek.
+    if not osdVisible and not paused then
+        showOSD()
+        return
+    end
+
     osdUntil = os.epoch("utc") + 5000
+
+    -- The row above the buttons is a touch-seek bar for the full V4 timeline.
+    -- This may jump backwards or forwards across any number of release parts.
+    if y == math.max(1, th - 1)
+        and totalFrames
+        and osdBarX1 and osdBarX2
+        and x >= osdBarX1 and x <= osdBarX2 then
+        local span = math.max(1, osdBarX2 - osdBarX1)
+        local ratio = math.max(0, math.min(1, (x - osdBarX1) / span))
+        local target = math.floor(ratio * math.max(0, totalFrames - 1) + 0.5)
+        requestSeek(target - currentGlobalFrame)
+        return
+    end
+
     if y < th then
         if not paused then hideOSD() end
         return
     end
+
     local section = math.floor((x - 1) * 7 / math.max(1, tw)) + 1
     if section == 1 then requestSeek(-10 * fps)
     elseif section == 2 then togglePause()
