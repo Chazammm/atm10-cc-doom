@@ -1,7 +1,7 @@
 -- CC-Music 3.0 diagnostics / setup report.
 local function yn(v) return v and "YES" or "NO" end
 
-print("CC-Music 3.6.0 diagnostics")
+print("CC-Music 3.6.2 diagnostics")
 print("------------------------")
 
 local monitor, monitorName = peripheral.find("monitor", function(name) monitorName = name; return true end)
@@ -84,3 +84,7 @@ print("  UI FPS          : " .. tostring(uiFps))
 print("  Visualizer slice: " .. tostring(vizSlice) .. " B")
 print("  Visualizer mode : " .. tostring(vizMode):upper())
 print("  Auto SAFE mode  : enabled in player")
+
+
+local boost = settings.get("ccmusic.output_boost") or 1
+print("Speaker boost: X" .. tostring(boost))
