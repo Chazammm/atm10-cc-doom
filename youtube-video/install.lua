@@ -1,5 +1,5 @@
 local base = "https://raw.githubusercontent.com/Chazammm/atm10-cc-doom/main/youtube-video/"
-local cacheBust = "?v=20261007-v4-seekbar"
+local cacheBust = "?v=20261007-v4-cleanseek"
 local files = {
   ["player.lua"] = "/video.lua",
   ["playlist.lua"] = "/playlist.lua",
@@ -58,7 +58,7 @@ print("Run: agartha-v3     -- V3.1 touch/prefetch/stereo")
 print("Run: agartha-v3 resume -- resume saved position")
 print("Run: agartha-v4     -- FINAL direct-cell V4 + Audio Profile A")
 print("Run: agartha-v4 resume -- resume V4 saved position")
-print("V4 timeline: tap monitor once, then tap the progress bar to seek anywhere")
+print("V4 controls: tap monitor once; use the clean progress bar to seek anywhere")
 print("Run: videobench     -- normal V2 benchmark")
 print("Run: videobench20   -- 20 FPS ceiling stress test")
 print("Run: stereosetup    -- optional true stereo with 2 speakers")
