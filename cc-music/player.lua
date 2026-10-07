@@ -2,7 +2,7 @@
 -- Designed for large Advanced Monitor walls and SQSH1/SQSH2 (DFPWM) audio files.
 -- Repository default: https://github.com/Di33le/CC-Music
 
-local VERSION = "3.6.2"
+local VERSION = "3.7.0"
 local PROTOCOL = "ccmusic.v2"
 local INDEX_CACHE = "/.ccmusic-index.json"
 
@@ -50,6 +50,8 @@ defineSetting("ccmusic.right_speaker", "", "string", "Peripheral name for the ri
 defineSetting("ccmusic.balance", 0.0, "number", "Stereo balance from -1.0 (left) to +1.0 (right)")
 defineSetting("ccmusic.passthrough_48k", true, "boolean", "Preserve native 48 kHz DFPWM bitstream when possible")
 defineSetting("ccmusic.stereo_chunk_bytes", 8192, "number", "SQSH2 DFPWM bytes per channel block")
+defineSetting("ccmusic.lyrics_online", true, "boolean", "Look up synced lyrics online when a track has no embedded LRC")
+defineSetting("ccmusic.remote_ids", "", "string", "Optional comma-separated Rednet computer IDs allowed to control the player")
 
 if settings and settings.load then pcall(settings.load) end
 
@@ -82,6 +84,8 @@ local CONFIG = {
     balance = tonumber(getSetting("ccmusic.balance", 0.0)) or 0.0,
     passthrough48k = getSetting("ccmusic.passthrough_48k", true) ~= false,
     stereoChunkBytes = math.floor(tonumber(getSetting("ccmusic.stereo_chunk_bytes", 8192)) or 8192),
+    lyricsOnline = getSetting("ccmusic.lyrics_online", true) ~= false,
+    remoteIds = tostring(getSetting("ccmusic.remote_ids", "") or ""),
 }
 if CONFIG.chunkBytes ~= 0 then CONFIG.chunkBytes = math.max(256, math.min(16384, CONFIG.chunkBytes)) end
 CONFIG.uiFps = math.max(2, math.min(16, CONFIG.uiFps))
@@ -95,6 +99,16 @@ CONFIG.outputBoost = math.floor(CONFIG.outputBoost + 0.5)
 if CONFIG.outputBoost < 1 or CONFIG.outputBoost > 3 then CONFIG.outputBoost = 1 end
 CONFIG.balance = math.max(-1, math.min(1, CONFIG.balance))
 CONFIG.stereoChunkBytes = math.max(1024, math.min(16384, CONFIG.stereoChunkBytes))
+
+local REMOTE_ALLOW = {}
+for token in CONFIG.remoteIds:gmatch("[^,%s]+") do
+    local id = tonumber(token)
+    if id then REMOTE_ALLOW[math.floor(id)] = true end
+end
+
+local function remoteAllowed(sender)
+    return next(REMOTE_ALLOW) == nil or REMOTE_ALLOW[tonumber(sender)] == true
+end
 
 local function clamp(v, lo, hi)
     if v < lo then return lo end
@@ -159,6 +173,16 @@ local function cleanTitle(name)
     return trim(s)
 end
 
+local function trackDisplayTitle(track)
+    if type(track) ~= "table" then return "" end
+    local title = cleanTitle(track.title or track.name or "")
+    local artist = trim(asciiSafe(track.artist or ""))
+    if artist ~= "" and not title:lower():find(artist:lower(), 1, true) then
+        return artist .. " - " .. title
+    end
+    return title
+end
+
 local function fmtTime(seconds)
     seconds = math.max(0, math.floor((seconds or 0) + 0.5))
     local h = math.floor(seconds / 3600)
@@ -195,9 +219,10 @@ local function releaseTagApiUrl()
         .. "/releases/tags/" .. urlEncode(CONFIG.libraryTag)
 end
 
-local function releaseAssetsApiUrl(releaseId)
+local function releaseAssetsApiUrl(releaseId, page)
     return "https://api.github.com/repos/" .. CONFIG.libraryRepo
-        .. "/releases/" .. tostring(releaseId) .. "/assets?per_page=100&page=1"
+        .. "/releases/" .. tostring(releaseId) .. "/assets?per_page=100&page="
+        .. tostring(page or 1)
 end
 
 local function manifestUrl()
@@ -287,6 +312,17 @@ local function fetchJson(url)
     return data
 end
 
+local function loadAllReleaseAssets(releaseId)
+    local all = {}
+    for page = 1, 50 do
+        local batch, err = fetchJson(releaseAssetsApiUrl(releaseId, page))
+        if not batch then return nil, err end
+        for i = 1, #batch do all[#all + 1] = batch[i] end
+        if #batch < 100 then return all end
+    end
+    return nil, "Release contains more than 5000 assets"
+end
+
 local function loadReleaseLibrary()
     -- Manifest supplies human-friendly titles and exact durations. Asset API
     -- supplies the real GitHub-normalized filenames/URLs (GitHub turns spaces
@@ -300,7 +336,7 @@ local function loadReleaseLibrary()
     local release, err = fetchJson(releaseTagApiUrl())
     if not release or not release.id then return nil, err or "Could not resolve music release" end
 
-    local assets, assetsErr = fetchJson(releaseAssetsApiUrl(release.id))
+    local assets, assetsErr = loadAllReleaseAssets(release.id)
     if not assets then return nil, assetsErr or "Could not list music release assets" end
 
     local manifestByKey = {}
@@ -346,6 +382,8 @@ local function loadReleaseLibrary()
         local track = {
             name = meta and meta.name or (group.stem .. ".sqsh"),
             title = meta and meta.title or displayTitleFromAsset(group.stem),
+            artist = meta and meta.artist or nil,
+            album = meta and meta.album or nil,
             size = totalSize,
             rate = tonumber(meta and meta.rate) or 48000,
             channels = tonumber(meta and meta.channels) or 2,
@@ -419,6 +457,8 @@ local state = {
     playedSamples = 0,
     flight = nil,
     lyrics = {},
+    lyricsStatus = "idle",
+    lyricsSource = "NONE",
     bands = {},
     bandTargets = {},
     bandPeaks = {},
@@ -825,6 +865,8 @@ local function requestTrack(index, addHistory)
     state.playedSamples = 0
     state.flight = nil
     state.lyrics = {}
+    state.lyricsStatus = "pending"
+    state.lyricsSource = "NONE"
     state.loading = true
     state.stopped = false
     state.error = nil
@@ -1048,9 +1090,121 @@ local function parseLyrics(raw)
     return out
 end
 
+local function lyricsCachePath(track)
+    if not fs then return nil end
+    local key = canonicalAssetKey((track and (track.name or track.title)) or "")
+    if key == "" then return nil end
+    return "/ccmusic/lyrics/" .. key .. ".lrc"
+end
+
+local function loadCachedLyrics(track)
+    local path = lyricsCachePath(track)
+    if not path or not fs.exists(path) then return nil end
+    local h = fs.open(path, "r")
+    if not h then return nil end
+    local raw = h.readAll()
+    h.close()
+    local parsed = parseLyrics(raw)
+    if #parsed > 0 then return parsed end
+    return nil
+end
+
+local function saveCachedLyrics(track, raw)
+    local path = lyricsCachePath(track)
+    if not path or type(raw) ~= "string" or raw == "" then return end
+    if not fs.exists("/ccmusic/lyrics") then pcall(fs.makeDir, "/ccmusic/lyrics") end
+    local h = fs.open(path, "w")
+    if h then h.write(raw); h.close() end
+end
+
+local function lyricsHttpJson(url)
+    if not http or not http.get then return nil end
+    local headers = {
+        ["User-Agent"] = "CC-Music/" .. VERSION .. " (https://github.com/Chazammm/atm10-cc-doom)",
+        ["Accept"] = "application/json",
+        ["Cache-Control"] = "no-cache",
+    }
+    local ok, h = pcall(http.get, url, headers, false)
+    if not ok or not h then return nil end
+    local body = h.readAll()
+    safeClose(h)
+    return jsonDecode(body)
+end
+
+local function normalizeLyricsKey(value)
+    return tostring(value or ""):lower():gsub("[^%w]", "")
+end
+
+local function onlineLyrics(track)
+    if not CONFIG.lyricsOnline or type(track) ~= "table" then return nil end
+
+    local cached = loadCachedLyrics(track)
+    if cached then return cached, "CACHE" end
+
+    local title = cleanTitle(track.title or track.name or "")
+    local artist = trim(track.artist or "")
+    local album = trim(track.album or "")
+    local duration = tonumber(track.duration) or 0
+
+    local record = nil
+    if title ~= "" and artist ~= "" then
+        local url = "https://lrclib.net/api/get?track_name=" .. urlEncode(title)
+            .. "&artist_name=" .. urlEncode(artist)
+        if album ~= "" then url = url .. "&album_name=" .. urlEncode(album) end
+        if duration >= 1 and duration <= 3600 then
+            url = url .. "&duration=" .. tostring(math.floor(duration + 0.5))
+        end
+        local exact = lyricsHttpJson(url)
+        if type(exact) == "table" and type(exact.syncedLyrics) == "string"
+            and exact.syncedLyrics ~= "" then
+            record = exact
+        end
+    end
+
+    if not record then
+        local query = trackDisplayTitle(track)
+        if query == "" then query = title end
+        if query == "" then return nil end
+        local results = lyricsHttpJson("https://lrclib.net/api/search?q=" .. urlEncode(query))
+        if type(results) == "table" then
+            local wantedTitle = normalizeLyricsKey(title)
+            local wantedArtist = normalizeLyricsKey(artist)
+            local bestScore = math.huge
+            for _, item in ipairs(results) do
+                if type(item) == "table" and type(item.syncedLyrics) == "string"
+                    and item.syncedLyrics ~= "" then
+                    local score = 25
+                    local itemDuration = tonumber(item.duration)
+                    if duration > 0 and itemDuration then
+                        score = math.abs(itemDuration - duration)
+                    end
+                    local gotTitle = normalizeLyricsKey(item.trackName or item.name)
+                    local gotArtist = normalizeLyricsKey(item.artistName)
+                    if wantedTitle ~= "" and gotTitle == wantedTitle then score = score - 8 end
+                    if wantedArtist ~= "" and gotArtist == wantedArtist then score = score - 6 end
+                    if score < bestScore then
+                        bestScore = score
+                        record = item
+                    end
+                end
+            end
+        end
+    end
+
+    if not record or type(record.syncedLyrics) ~= "string" then return nil end
+    local parsed = parseLyrics(record.syncedLyrics)
+    if #parsed == 0 then return nil end
+    saveCachedLyrics(track, record.syncedLyrics)
+    return parsed, "LRCLIB"
+end
+
 local function lyricAt(seconds)
     local lyrics = state.lyrics
-    if #lyrics == 0 then return "(no synced lyrics)" end
+    if #lyrics == 0 then
+        if state.lyricsStatus == "searching" then return "(finding synced lyrics...)" end
+        if state.lyricsStatus == "missing" then return "(no synced lyrics found)" end
+        return "(no synced lyrics)"
+    end
     local lo, hi, best = 1, #lyrics, nil
     while lo <= hi do
         local mid = math.floor((lo + hi) / 2)
@@ -1863,6 +2017,8 @@ local function audioLoop()
             state.playedSamples = math.floor(seekSeconds * 48000 + 0.5)
             state.flight = nil
             state.lyrics = {}
+            state.lyricsStatus = "pending"
+            state.lyricsSource = "NONE"
             state.sourceChannels = tonumber(track.channels) or 1
             state.sourceRate = tonumber(track.rate) or 0
             state.sourceFormat = tostring(track.format or "SQSH")
@@ -1946,6 +2102,16 @@ local function audioLoop()
                         state.sourceRate = header.rate
                         state.sourceFormat = header.format
                         state.lyrics = parseLyrics(header.lyricsRaw)
+                        if #state.lyrics > 0 then
+                            state.lyricsStatus = "embedded"
+                            state.lyricsSource = "EMBEDDED"
+                        elseif CONFIG.lyricsOnline then
+                            state.lyricsStatus = "searching"
+                            state.lyricsSource = "NONE"
+                            os.queueEvent("ccmusic_lyrics_lookup", generation, track.name)
+                        else
+                            state.lyricsStatus = "missing"
+                        end
                         seekRemainingBytes = math.max(0, math.floor(seekSeconds * header.rate / 8 + 0.5))
                     else
                         if header.rate ~= firstHeader.rate
@@ -2654,7 +2820,7 @@ local function drawQueue(c, x1, y1, x2, y2)
             local prefix = string.format("%s%s%2d ", marker, star, ordinal)
             local titleRoom = width - #prefix - #time - 2
             if titleRoom < 3 then titleRoom = 3 end
-            local title = tr.title
+            local title = trackDisplayTitle(tr)
             if #title > titleRoom then title = title:sub(1, titleRoom - 1) .. ">" end
 
             local selected = itemIndex == state.currentIndex
@@ -2830,7 +2996,7 @@ local function renderFrame()
     if state.current then
         local rightLimit = math.max(20, w - #statusRight - 2)
         local titleWidth = math.max(8, rightLimit - 26 + 1)
-        c:center(1, marqueeText(state.current.title, titleWidth), 26, rightLimit, colors.yellow, colors.blue)
+        c:center(1, marqueeText(trackDisplayTitle(state.current), titleWidth), 26, rightLimit, colors.yellow, colors.blue)
     else
         c:center(1, "CC-Music " .. VERSION, 20, w - #statusRight - 2, colors.yellow, colors.blue)
     end
@@ -2893,7 +3059,8 @@ local function renderFrame()
             subline = "cached library"
             subColor = colors.orange
         elseif state.current then
-            subline = string.format("%s / %s  |  %s  |  %s%s", fmtTime(currentPositionSeconds()), fmtTime(state.current.duration), state.sourceFormat, CONFIG.vizMode:upper(), CONFIG.resumeEnabled and "  |  RESUME" or "")
+            local lyricsBadge = state.lyricsSource ~= "NONE" and ("  |  LYRICS:" .. state.lyricsSource) or ""
+            subline = string.format("%s / %s  |  %s  |  %s%s%s", fmtTime(currentPositionSeconds()), fmtTime(state.current.duration), state.sourceFormat, CONFIG.vizMode:upper(), CONFIG.resumeEnabled and "  |  RESUME" or "", lyricsBadge)
             subColor = colors.lightGray
         end
         if subline then c:center(2, subline, leftX1, leftX2, subColor, colors.black) end
@@ -2992,7 +3159,7 @@ local function broadcastStatus(targetId)
     local msg = {
         op = "status",
         version = VERSION,
-        title = state.current and state.current.title or nil,
+        title = state.current and trackDisplayTitle(state.current) or nil,
         playing = state.current ~= nil and not state.paused and not state.loading,
         paused = state.paused,
         loading = state.loading,
@@ -3026,6 +3193,7 @@ end
 
 local function handleRemote(sender, msg)
     if type(msg) ~= "table" then return end
+    if not remoteAllowed(sender) then return end
     state.remotes[sender] = nowMs()
     local op = msg.op
     if op == "discover" or op == "status" or op == "ping" then
@@ -3127,6 +3295,32 @@ local function eventLoop()
     end
 end
 
+local function lyricsLoop()
+    while state.running do
+        local ev, generation, trackName = os.pullEventRaw()
+        if ev == "ccmusic_shutdown" then return end
+        if ev == "ccmusic_lyrics_lookup" and CONFIG.lyricsOnline then
+            local track = nil
+            if state.current and state.current.name == trackName then track = state.current end
+            if track and generation == state.generation and #state.lyrics == 0 then
+                local lyrics, source = onlineLyrics(track)
+                if state.running and generation == state.generation
+                    and state.current and state.current.name == trackName and #state.lyrics == 0 then
+                    if lyrics and #lyrics > 0 then
+                        state.lyrics = lyrics
+                        state.lyricsStatus = "online"
+                        state.lyricsSource = source or "ONLINE"
+                    else
+                        state.lyricsStatus = "missing"
+                        state.lyricsSource = "NONE"
+                    end
+                    state._frameInvalid = true
+                end
+            end
+        end
+    end
+end
+
 local function heartbeatLoop()
     while state.running do
         saveResume(false)
@@ -3203,7 +3397,7 @@ else
 end
 
 local ok, err = pcall(function()
-    parallel.waitForAll(audioLoop, eventLoop, renderLoop, heartbeatLoop)
+    parallel.waitForAll(audioLoop, eventLoop, renderLoop, heartbeatLoop, lyricsLoop)
 end)
 
 saveResume(true)
