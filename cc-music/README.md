@@ -1,4 +1,4 @@
-# CC-Music 3.6.2 for ATM10 8.2 / CC:Tweaked
+# CC-Music 3.7.0 for ATM10 8.2 / CC:Tweaked
 
 A large-monitor music player for CC:Tweaked, built around the `Di33le/CC-Music` library and extended with true stereo support.
 
@@ -11,7 +11,7 @@ A large-monitor music player for CC:Tweaked, built around the `Di33le/CC-Music` 
 - HQ 24 kHz -> 48 kHz resampling for the legacy Di33le library.
 - True synchronized LEFT/RIGHT speaker routing with balance control and automatic mono fallback.
 - Reuses the Agartha/video stereo mapping automatically when CC-Music has no separate mapping.
-- Audio Profile A mastering for newly converted music: SoXR 48 kHz, neutral 16 kHz low-pass and limiter headroom.
+- Audio Profile A+ mastering for newly converted music: FFmpeg SWR 128-tap resampling to 48 kHz, neutral 16 kHz low-pass and limiter headroom.
 - Real 16-band Goertzel visualizer based on the actual audio.
 - Synchronized LRC lyrics.
 - Up-next queue, durations, play/pause, previous/next, shuffle, loop and volume.
@@ -89,7 +89,7 @@ Legacy format:
 
 ### SQSH2
 
-CC-Music 3.6.2 stereo format:
+CC-Music 3.7.0 stereo format:
 
 - two independent DFPWM channels;
 - 48 kHz;
@@ -118,7 +118,7 @@ Native 48 kHz files can use DFPWM passthrough. The player expands each stored DF
 The included converter uses the same neutral mastering direction selected for the Agartha project:
 
 - 20 Hz high-pass/DC cleanup;
-- SoXR resampling to 48 kHz at precision 33;
+- FFmpeg SWR resampling to 48 kHz with a 128-tap filter;
 - neutral 16 kHz low-pass;
 - float32 stereo staging before channel split;
 - -1 dB limiter headroom;
@@ -184,6 +184,8 @@ ccmusic.right_speaker
 ccmusic.balance             0.0
 ccmusic.passthrough_48k     true
 ccmusic.stereo_chunk_bytes  8192
+ccmusic.lyrics_online       true
+ccmusic.remote_ids
 ```
 
 `ccmusic.audio_mode`:
@@ -217,6 +219,8 @@ Use the on-screen previous, play/pause, next, shuffle, loop, audio-routing and v
 ### Remote
 
 The Rednet remote also shows the active channel mode/sample rate and supports `A` to change audio routing remotely.
+
+By default any computer on the reachable Rednet network can control the player. To restrict control, set `ccmusic.remote_ids` on the player computer to a comma-separated list of trusted Computer IDs, for example `12,34`. The 3.7 remote shows its own Computer ID in the header.
 
 ## Efficiency changes in 3.0
 
@@ -334,3 +338,25 @@ CC:Tweaked accepts speaker stream volume up to 3. The player's normal volume sli
 Minecraft primarily uses values above 1 to extend the audible distance rather than making a nearby speaker dramatically louder. This is therefore intended as a range boost for larger rooms/bases.
 
 Changing boost interrupts and immediately resumes the current audio buffer so Minecraft applies the new stream volume/range reliably. Keyboard `R` and the Rednet remote also cycle the boost.
+
+
+## Lyrics, metadata and library hardening in 3.7
+
+CC-Music now treats lyrics as a layered feature instead of relying only on an embedded LRC block.
+
+Lyrics lookup order:
+
+1. Embedded same-name `.lrc` data inside SQSH1/SQSH2.
+2. Local cache in `/ccmusic/lyrics`.
+3. Optional online synced-lyrics lookup through LRCLIB when `ccmusic.lyrics_online=true`.
+
+The online lookup runs in its own coroutine, so a slow lyrics request does not stall audio streaming. Successful synced lyrics are cached locally and reused on future plays.
+
+The converter now writes a small local `.ccmeta.json` sidecar containing title, artist and album information from FFprobe. The library builder copies that metadata into `library.json`, allowing the monitor UI to show `Artist - Title` and giving the lyrics matcher better search data. The metadata sidecar itself is not uploaded as a release asset.
+
+Library reliability changes:
+
+- GitHub release assets are paginated instead of stopping at the first 100 assets.
+- Each library build starts from a clean generated-output folder so deleted or previously encoded songs cannot leak back into a newly recreated release.
+- The documented mastering path now matches the actual converter: FFmpeg SWR with a 128-tap resampling filter, not SoXR.
+- The recommended dedicated monitor layout is consistently 8x6 at text scale 0.5; 8x5 remains supported.
