@@ -1,6 +1,6 @@
 -- CC-Music Pocket/Computer Remote
 local PROTOCOL = "ccmusic.v2"
-local VERSION = "3.6.2"
+local VERSION = "3.7.0"
 
 local function nowMs()
     if os.epoch then return os.epoch("utc") end
@@ -49,7 +49,7 @@ local function draw()
     term.clearLine()
     term.setCursorPos(2, 1)
     term.setTextColor(colors.white)
-    term.write("CC-MUSIC REMOTE")
+    term.write("CC-MUSIC REMOTE  ID:" .. tostring(os.getComputerID and os.getComputerID() or "?"))
 
     term.setBackgroundColor(colors.black)
     if status and nowMs() - lastSeen < 6000 then
