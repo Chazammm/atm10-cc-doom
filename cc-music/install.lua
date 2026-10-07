@@ -1,6 +1,6 @@
 -- CC-Music one-line installer for CC:Tweaked / ATM10 8.2
 local BASE = "https://raw.githubusercontent.com/Chazammm/atm10-cc-doom/cc-music-player/cc-music/"
-local CACHE = "?v=3.7.0"
+local CACHE = "?v=3.7.1"
 local DIR = "/ccmusic"
 
 local function get(url)
@@ -70,7 +70,7 @@ inf.write(infoLauncher)
 inf.close()
 
 print("")
-print("CC-Music 3.7.0 installed.")
+print("CC-Music 3.7.1 installed.")
 print("Run: music")
 print("Stereo setup: music-stereo")
 print("Diagnostics: music-info")
