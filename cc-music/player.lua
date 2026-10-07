@@ -2108,7 +2108,6 @@ local function audioLoop()
                         elseif CONFIG.lyricsOnline then
                             state.lyricsStatus = "searching"
                             state.lyricsSource = "NONE"
-                            os.queueEvent("ccmusic_lyrics_lookup", generation, track.name)
                         else
                             state.lyricsStatus = "missing"
                         end
@@ -3296,26 +3295,37 @@ local function eventLoop()
 end
 
 local function lyricsLoop()
+    local attemptedGeneration = nil
+
     while state.running do
-        local ev, generation, trackName = os.pullEventRaw()
-        if ev == "ccmusic_shutdown" then return end
-        if ev == "ccmusic_lyrics_lookup" and CONFIG.lyricsOnline then
-            local track = nil
-            if state.current and state.current.name == trackName then track = state.current end
-            if track and generation == state.generation and #state.lyrics == 0 then
-                local lyrics, source = onlineLyrics(track)
-                if state.running and generation == state.generation
-                    and state.current and state.current.name == trackName and #state.lyrics == 0 then
-                    if lyrics and #lyrics > 0 then
-                        state.lyrics = lyrics
-                        state.lyricsStatus = "online"
-                        state.lyricsSource = source or "ONLINE"
-                    else
-                        state.lyricsStatus = "missing"
-                        state.lyricsSource = "NONE"
-                    end
-                    state._frameInvalid = true
+        local track = state.current
+        local generation = state.generation
+
+        if CONFIG.lyricsOnline and track and state.lyricsStatus == "searching"
+            and attemptedGeneration ~= generation then
+            attemptedGeneration = generation
+            local trackName = track.name
+            local lyrics, source = onlineLyrics(track)
+
+            if state.running and generation == state.generation
+                and state.current and state.current.name == trackName and #state.lyrics == 0 then
+                if lyrics and #lyrics > 0 then
+                    state.lyrics = lyrics
+                    state.lyricsStatus = "online"
+                    state.lyricsSource = source or "ONLINE"
+                else
+                    state.lyricsStatus = "missing"
+                    state.lyricsSource = "NONE"
                 end
+                state._frameInvalid = true
+            end
+        else
+            local timer = os.startTimer(0.25)
+            while state.running do
+                local ev, id = os.pullEventRaw()
+                if ev == "ccmusic_shutdown" then return end
+                if ev == "timer" and id == timer then break end
+                if ev == "ccmusic_wake" then break end
             end
         end
     end
