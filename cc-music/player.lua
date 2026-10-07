@@ -2,7 +2,7 @@
 -- Designed for large Advanced Monitor walls and SQSH1/SQSH2 (DFPWM) audio files.
 -- Repository default: https://github.com/Di33le/CC-Music
 
-local VERSION = "3.6.1"
+local VERSION = "3.6.2"
 local PROTOCOL = "ccmusic.v2"
 local INDEX_CACHE = "/.ccmusic-index.json"
 
@@ -28,6 +28,7 @@ end
 defineSetting("ccmusic.repo", "Di33le/CC-Music", "string", "GitHub owner/repository containing SQSH tracks")
 defineSetting("ccmusic.branch", "main", "string", "GitHub branch to read")
 defineSetting("ccmusic.volume", 1.0, "number", "Playback volume from 0.0 to 1.0")
+defineSetting("ccmusic.output_boost", 1, "number", "Speaker output/range boost: 1, 2, or 3")
 defineSetting("ccmusic.shuffle", true, "boolean", "Shuffle playlist")
 defineSetting("ccmusic.loop", "all", "string", "Loop mode: all, one, off")
 defineSetting("ccmusic.text_scale", 0.5, "number", "Advanced Monitor text scale")
@@ -63,6 +64,7 @@ end
 local CONFIG = {
     repo = tostring(getSetting("ccmusic.repo", "Di33le/CC-Music")),
     branch = tostring(getSetting("ccmusic.branch", "main")),
+    outputBoost = tonumber(getSetting("ccmusic.output_boost", 1)) or 1,
     textScale = tonumber(getSetting("ccmusic.text_scale", 0.5)) or 0.5,
     chunkBytes = math.floor(tonumber(getSetting("ccmusic.chunk_bytes", 0)) or 0),
     hqResampler = getSetting("ccmusic.hq_resampler", true) ~= false,
@@ -89,6 +91,8 @@ if CONFIG.textScale < 0.5 then CONFIG.textScale = 0.5 end
 if CONFIG.textScale > 5 then CONFIG.textScale = 5 end
 if CONFIG.legacyResampler ~= "sinc8" and CONFIG.legacyResampler ~= "cubic" and CONFIG.legacyResampler ~= "linear" then CONFIG.legacyResampler = "sinc8" end
 if CONFIG.audioMode ~= "auto" and CONFIG.audioMode ~= "stereo" and CONFIG.audioMode ~= "mono" then CONFIG.audioMode = "auto" end
+CONFIG.outputBoost = math.floor(CONFIG.outputBoost + 0.5)
+if CONFIG.outputBoost < 1 or CONFIG.outputBoost > 3 then CONFIG.outputBoost = 1 end
 CONFIG.balance = math.max(-1, math.min(1, CONFIG.balance))
 CONFIG.stereoChunkBytes = math.max(1024, math.min(16384, CONFIG.stereoChunkBytes))
 
@@ -555,6 +559,22 @@ local function setVolume(v)
     state.volume = v
     saveSetting("ccmusic.volume", state.volume)
     interruptAudio("volume")
+end
+
+local function effectiveSpeakerVolume()
+    return clamp(state.volume * CONFIG.outputBoost, 0, 3)
+end
+
+local function cycleOutputBoost()
+    if CONFIG.outputBoost == 1 then CONFIG.outputBoost = 2
+    elseif CONFIG.outputBoost == 2 then CONFIG.outputBoost = 3
+    else CONFIG.outputBoost = 1 end
+    saveSetting("ccmusic.output_boost", CONFIG.outputBoost)
+
+    -- CC:Tweaked/Minecraft do not reliably apply a stream-volume change to an
+    -- already-playing sound instance. Interrupt and resume the current PCM
+    -- position so x1/x2/x3 takes effect immediately.
+    interruptAudio("output_boost")
 end
 
 local function setPaused(v)
@@ -1534,7 +1554,7 @@ local function tryStartSegment(segment, generation)
             for i = 1, #state.speakers do
                 local entry = state.speakers[i]
                 tasks[i] = function()
-                    local ok, value = pcall(entry.object.playAudio, segment, state.volume)
+                    local ok, value = pcall(entry.object.playAudio, segment, effectiveSpeakerVolume())
                     accepted[i] = ok and value == true
                 end
             end
@@ -1579,10 +1599,11 @@ local function stereoRouteAvailable()
 end
 
 local function stereoVolumes()
-    local left, right = state.volume, state.volume
+    local base = effectiveSpeakerVolume()
+    local left, right = base, base
     if CONFIG.balance > 0 then left = left * (1 - CONFIG.balance)
     elseif CONFIG.balance < 0 then right = right * (1 + CONFIG.balance) end
-    return left, right
+    return clamp(left, 0, 3), clamp(right, 0, 3)
 end
 
 local function tryStartStereoSegment(leftSegment, rightSegment, generation)
@@ -2710,10 +2731,19 @@ end
 local function drawVolume(c, x1, y, x2)
     local label = "VOL"
     c:text(x1, y, label, colors.lightGray, colors.black)
+
+    local boostText = "BOOST:X" .. tostring(CONFIG.outputBoost)
+    local boostLabel = " " .. boostText .. " "
+    local boostX = x1 + #label + 2
+    c:text(boostX, y, boostLabel, CONFIG.outputBoost > 1 and colors.black or colors.white,
+        CONFIG.outputBoost > 1 and colors.orange or colors.gray)
+    addHitbox("output_boost", boostX, y, boostX + #boostLabel - 1, y)
+
     local pct = string.format("%3d%%", math.floor(state.volume * 100 + 0.5))
-    local barX1 = x1 + #label + 2
+    local barX1 = boostX + #boostLabel + 2
     local barX2 = x2 - #pct - 2
     c:text(x2 - #pct + 1, y, pct, colors.white, colors.black)
+
     if barX2 >= barX1 then
         local width = barX2 - barX1 + 1
         local filled = math.floor(width * state.volume + 0.5)
@@ -2742,6 +2772,7 @@ local function drawSettingsPanel(c, x1, y1, x2, y2)
 
     option("VISUALIZER", CONFIG.vizMode:upper(), "viz_mode", true)
     option("AUDIO ROUTING", CONFIG.audioMode:upper(), "audio_mode", true)
+    option("SPEAKER BOOST", "X" .. tostring(CONFIG.outputBoost), "output_boost", CONFIG.outputBoost > 1)
     option("SHUFFLE", state.shuffle and "ON" or "OFF", "shuffle", state.shuffle)
     option("LOOP", state.loopMode:upper(), "loop", state.loopMode ~= "off")
     option("RESUME AFTER RESTART", CONFIG.resumeEnabled and "ON" or "OFF", "resume_toggle", CONFIG.resumeEnabled)
@@ -2787,6 +2818,7 @@ local function renderFrame()
 
     local rateBadge = state.sourceRate > 0 and (tostring(math.floor(state.sourceRate / 1000 + 0.5)) .. "k") or "--"
     local audioBadge = state.activeAudioMode .. " " .. rateBadge
+    if CONFIG.outputBoost > 1 then audioBadge = audioBadge .. " X" .. tostring(CONFIG.outputBoost) end
     if state.audioPassthrough then
         audioBadge = audioBadge .. " DIRECT"
     elseif state.sourceRate == 24000 then
@@ -2929,6 +2961,7 @@ local function handleAction(id, data, touchX)
     elseif id == "shuffle" then toggleShuffle()
     elseif id == "loop" then cycleLoop()
     elseif id == "audio_mode" then cycleAudioMode()
+    elseif id == "output_boost" then cycleOutputBoost()
     elseif id == "viz_mode" then cycleVizMode()
     elseif id == "favorite" then toggleFavorite()
     elseif id == "favorites_only" then toggleFavoritesOnly()
@@ -2971,6 +3004,7 @@ local function broadcastStatus(targetId)
         speakers = #state.speakers,
         audio_mode = state.activeAudioMode,
         routing_mode = CONFIG.audioMode,
+        output_boost = CONFIG.outputBoost,
         viz_mode = CONFIG.vizMode,
         queue_count = #state.manualQueue,
         favorite = isFavorite(state.currentIndex),
@@ -3004,6 +3038,7 @@ local function handleRemote(sender, msg)
     elseif op == "shuffle" then toggleShuffle(); broadcastStatus(sender)
     elseif op == "loop" then cycleLoop(); broadcastStatus(sender)
     elseif op == "audio_mode" then cycleAudioMode(); broadcastStatus(sender)
+    elseif op == "output_boost" then cycleOutputBoost(); broadcastStatus(sender)
     elseif op == "viz_mode" then cycleVizMode(); broadcastStatus(sender)
     elseif op == "favorite" then toggleFavorite(); broadcastStatus(sender)
     elseif op == "favorites_only" then toggleFavoritesOnly(); broadcastStatus(sender)
@@ -3049,6 +3084,7 @@ local function eventLoop()
             elseif a == keys.s and not state.searchMode then toggleShuffle()
             elseif a == keys.l and not state.searchMode then cycleLoop()
             elseif a == keys.a and not state.searchMode then cycleAudioMode()
+            elseif a == keys.r and not state.searchMode then cycleOutputBoost()
             elseif a == keys.v and not state.searchMode then cycleVizMode()
             elseif a == keys.j and not state.searchMode then seekRelative(-10)
             elseif a == keys.k and not state.searchMode then seekRelative(10)
