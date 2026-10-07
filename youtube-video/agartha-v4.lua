@@ -90,6 +90,7 @@ local right = settings.get("musicvideo.right_speaker")
 local stereo = left and right and peripheral.isPresent(left) and peripheral.isPresent(right)
 print(("Agartha V4: %d parts | 20 FPS | %s | Audio A"):format(EXPECTED_PARTS, stereo and "stereo" or "mono fallback"))
 if not stereo then print("For true stereo connect two speakers and run: stereosetup") end
+print("Touch monitor once for controls; tap the timeline to seek across all 136 parts.")
 
 local saved = tonumber(settings.get("agartha.v4.resume_frame")) or 0
 if saved > 0 and startMode == "start" then
