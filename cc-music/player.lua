@@ -2,7 +2,7 @@
 -- Designed for large Advanced Monitor walls and SQSH1/SQSH2 (DFPWM) audio files.
 -- Repository default: https://github.com/Di33le/CC-Music
 
-local VERSION = "3.7.0"
+local VERSION = "3.7.1"
 local PROTOCOL = "ccmusic.v2"
 local INDEX_CACHE = "/.ccmusic-index.json"
 
@@ -159,6 +159,8 @@ end
 local function cleanTitle(name)
     local s = asciiSafe(name)
     s = s:gsub("%.sqsh$", "")
+    s = s:gsub("^%s*%d+%s*[%.%-]%s*", "")
+    s = s:gsub("%s*[_%(][%w%-_][%w%-_][%w%-_][%w%-_][%w%-_][%w%-_][%w%-_][%w%-_][%w%-_][%w%-_][%w%-_][_%)]%s*$", "")
     s = s:gsub("%s*%([Oo]fficial [Mm]usic [Vv]ideo%)%s*$", "")
     s = s:gsub("%s*%([Oo]fficial [Vv]ideo%)%s*$", "")
     s = s:gsub("%s*%([Oo]fficial [Aa]udio%)%s*$", "")
@@ -173,14 +175,37 @@ local function cleanTitle(name)
     return trim(s)
 end
 
+local function inferArtistTitle(track)
+    if type(track) ~= "table" then return "", "" end
+    local explicitArtist = trim(asciiSafe(track.artist or ""))
+    local rawTitle = cleanTitle(track.title or track.name or "")
+    if explicitArtist ~= "" then
+        return explicitArtist, rawTitle
+    end
+
+    -- Old libraries were built from filenames, often in forms such as
+    -- "01 - Artist - Title" or "Artist - Title". Strip the track number above,
+    -- then infer the first dash-separated field as artist.
+    local artist, title = rawTitle:match("^(.-)%s+%-%s+(.+)$")
+    if artist and title then
+        artist, title = trim(artist), trim(title)
+        if artist ~= "" and title ~= "" then return artist, title end
+    end
+
+    artist, title = rawTitle:match("^(.-)%s+|%s+(.+)$")
+    if artist and title then
+        artist, title = trim(artist), trim(title)
+        if artist ~= "" and title ~= "" then return artist, title end
+    end
+
+    return "", rawTitle
+end
+
 local function trackDisplayTitle(track)
     if type(track) ~= "table" then return "" end
-    local title = cleanTitle(track.title or track.name or "")
-    local artist = trim(asciiSafe(track.artist or ""))
-    if artist ~= "" and not title:lower():find(artist:lower(), 1, true) then
-        return artist .. " - " .. title
-    end
-    return title
+    local artist, title = inferArtistTitle(track)
+    if artist ~= "" and title ~= "" then return artist .. " - " .. title end
+    return title ~= "" and title or cleanTitle(track.name or "")
 end
 
 local function fmtTime(seconds)
@@ -459,6 +484,7 @@ local state = {
     lyrics = {},
     lyricsStatus = "idle",
     lyricsSource = "NONE",
+    lyricsError = nil,
     bands = {},
     bandTargets = {},
     bandPeaks = {},
@@ -867,6 +893,7 @@ local function requestTrack(index, addHistory)
     state.lyrics = {}
     state.lyricsStatus = "pending"
     state.lyricsSource = "NONE"
+    state.lyricsError = nil
     state.loading = true
     state.stopped = false
     state.error = nil
@@ -1118,91 +1145,164 @@ local function saveCachedLyrics(track, raw)
 end
 
 local function lyricsHttpJson(url)
-    if not http or not http.get then return nil end
+    if not http or not http.get then return nil, "HTTP API disabled" end
     local headers = {
-        ["User-Agent"] = "CC-Music/" .. VERSION .. " (https://github.com/Chazammm/atm10-cc-doom)",
+        ["User-Agent"] = "CC-Music " .. VERSION,
         ["Accept"] = "application/json",
-        ["Cache-Control"] = "no-cache",
     }
-    local ok, h = pcall(http.get, url, headers, false)
-    if not ok or not h then return nil end
+
+    if http.checkURL then
+        local okCheck, allowed, reason = pcall(http.checkURL, url)
+        if okCheck and allowed == false then
+            return nil, "URL blocked: " .. tostring(reason or "not permitted")
+        end
+    end
+
+    local ok, h, err, failure = pcall(http.get, url, headers, false)
+    if not ok then return nil, tostring(h) end
+    if not h then
+        local code = nil
+        if failure and failure.getResponseCode then
+            local okCode, value = pcall(failure.getResponseCode)
+            if okCode then code = value end
+            safeClose(failure)
+        end
+        return nil, (code and ("HTTP " .. tostring(code) .. ": ") or "") .. tostring(err or "request failed")
+    end
+
+    local code = 200
+    if h.getResponseCode then
+        local okCode, value = pcall(h.getResponseCode)
+        if okCode and value then code = value end
+    end
     local body = h.readAll()
     safeClose(h)
-    return jsonDecode(body)
+    if code < 200 or code >= 300 then return nil, "HTTP " .. tostring(code) end
+
+    local data = jsonDecode(body)
+    if type(data) ~= "table" then return nil, "invalid JSON" end
+    return data, nil
 end
 
 local function normalizeLyricsKey(value)
     return tostring(value or ""):lower():gsub("[^%w]", "")
 end
 
+local function lyricsCandidateScore(item, wantedArtist, wantedTitle, duration)
+    if type(item) ~= "table" or type(item.syncedLyrics) ~= "string" or item.syncedLyrics == "" then
+        return nil
+    end
+
+    local gotTitle = normalizeLyricsKey(item.trackName or item.name)
+    local gotArtist = normalizeLyricsKey(item.artistName)
+    local wantTitle = normalizeLyricsKey(wantedTitle)
+    local wantArtist = normalizeLyricsKey(wantedArtist)
+    if wantTitle == "" then return nil end
+
+    local titleExact = gotTitle == wantTitle
+    local titleNear = gotTitle:find(wantTitle, 1, true) or wantTitle:find(gotTitle, 1, true)
+    if not titleExact and not titleNear then return nil end
+
+    local score = titleExact and 0 or 12
+    if wantArtist ~= "" then
+        if gotArtist == wantArtist then score = score - 8
+        elseif gotArtist:find(wantArtist, 1, true) or wantArtist:find(gotArtist, 1, true) then
+            score = score - 3
+        else
+            score = score + 18
+        end
+    end
+
+    local itemDuration = tonumber(item.duration)
+    if duration > 0 and itemDuration then
+        score = score + math.min(20, math.abs(itemDuration - duration) / 2)
+    end
+    return score
+end
+
 local function onlineLyrics(track)
-    if not CONFIG.lyricsOnline or type(track) ~= "table" then return nil end
+    if not CONFIG.lyricsOnline or type(track) ~= "table" then return nil, nil, "online lyrics disabled" end
 
     local cached = loadCachedLyrics(track)
-    if cached then return cached, "CACHE" end
+    if cached then return cached, "CACHE", nil end
 
-    local title = cleanTitle(track.title or track.name or "")
-    local artist = trim(track.artist or "")
-    local album = trim(track.album or "")
+    local artist, title = inferArtistTitle(track)
+    local album = trim(asciiSafe(track.album or ""))
     local duration = tonumber(track.duration) or 0
+    if title == "" then return nil, nil, "could not infer track title" end
 
+    local lastError = nil
     local record = nil
-    if title ~= "" and artist ~= "" then
-        local url = "https://lrclib.net/api/get?track_name=" .. urlEncode(title)
+
+    -- Exact lookup first when an artist could be inferred. Deliberately omit
+    -- duration here: old YouTube/covers often differ from LRCLIB by more than
+    -- two seconds, and LRCLIB treats duration as a strict match criterion.
+    if artist ~= "" then
+        local exactUrl = "https://lrclib.net/api/get?track_name=" .. urlEncode(title)
             .. "&artist_name=" .. urlEncode(artist)
-        if album ~= "" then url = url .. "&album_name=" .. urlEncode(album) end
-        if duration >= 1 and duration <= 3600 then
-            url = url .. "&duration=" .. tostring(math.floor(duration + 0.5))
-        end
-        local exact = lyricsHttpJson(url)
+        local exact, err = lyricsHttpJson(exactUrl)
+        if err then lastError = err end
         if type(exact) == "table" and type(exact.syncedLyrics) == "string"
             and exact.syncedLyrics ~= "" then
             record = exact
         end
     end
 
+    local queries = {}
+    local seen = {}
+    local function addQuery(q)
+        q = trim(q)
+        local key = q:lower()
+        if q ~= "" and not seen[key] then
+            seen[key] = true
+            queries[#queries + 1] = q
+        end
+    end
+
+    if artist ~= "" then addQuery(artist .. " " .. title) end
+    addQuery(title)
+    addQuery(trackDisplayTitle(track))
+    addQuery(cleanTitle(track.name or ""))
+
     if not record then
-        local query = trackDisplayTitle(track)
-        if query == "" then query = title end
-        if query == "" then return nil end
-        local results = lyricsHttpJson("https://lrclib.net/api/search?q=" .. urlEncode(query))
-        if type(results) == "table" then
-            local wantedTitle = normalizeLyricsKey(title)
-            local wantedArtist = normalizeLyricsKey(artist)
-            local bestScore = math.huge
-            for _, item in ipairs(results) do
-                if type(item) == "table" and type(item.syncedLyrics) == "string"
-                    and item.syncedLyrics ~= "" then
-                    local score = 25
-                    local itemDuration = tonumber(item.duration)
-                    if duration > 0 and itemDuration then
-                        score = math.abs(itemDuration - duration)
-                    end
-                    local gotTitle = normalizeLyricsKey(item.trackName or item.name)
-                    local gotArtist = normalizeLyricsKey(item.artistName)
-                    if wantedTitle ~= "" and gotTitle == wantedTitle then score = score - 8 end
-                    if wantedArtist ~= "" and gotArtist == wantedArtist then score = score - 6 end
-                    if score < bestScore then
+        local bestScore = math.huge
+        for _, query in ipairs(queries) do
+            local results, err = lyricsHttpJson("https://lrclib.net/api/search?q=" .. urlEncode(query))
+            if err then
+                lastError = err
+            elseif type(results) == "table" then
+                for _, item in ipairs(results) do
+                    local score = lyricsCandidateScore(item, artist, title, duration)
+                    if score and score < bestScore then
                         bestScore = score
                         record = item
                     end
                 end
             end
+            if record and bestScore <= -5 then break end
         end
     end
 
-    if not record or type(record.syncedLyrics) ~= "string" then return nil end
+    if not record or type(record.syncedLyrics) ~= "string" then
+        return nil, nil, lastError or ("no synced match for " .. trackDisplayTitle(track))
+    end
+
     local parsed = parseLyrics(record.syncedLyrics)
-    if #parsed == 0 then return nil end
+    if #parsed == 0 then return nil, nil, "matched lyrics could not be parsed" end
     saveCachedLyrics(track, record.syncedLyrics)
-    return parsed, "LRCLIB"
+    return parsed, "LRCLIB", nil
 end
 
 local function lyricAt(seconds)
     local lyrics = state.lyrics
     if #lyrics == 0 then
         if state.lyricsStatus == "searching" then return "(finding synced lyrics...)" end
-        if state.lyricsStatus == "missing" then return "(no synced lyrics found)" end
+        if state.lyricsStatus == "missing" then
+            if state.lyricsError and state.lyricsError ~= "" then
+                return "(lyrics: " .. tostring(state.lyricsError) .. ")"
+            end
+            return "(no synced lyrics found)"
+        end
         return "(no synced lyrics)"
     end
     local lo, hi, best = 1, #lyrics, nil
@@ -2019,6 +2119,7 @@ local function audioLoop()
             state.lyrics = {}
             state.lyricsStatus = "pending"
             state.lyricsSource = "NONE"
+            state.lyricsError = nil
             state.sourceChannels = tonumber(track.channels) or 1
             state.sourceRate = tonumber(track.rate) or 0
             state.sourceFormat = tostring(track.format or "SQSH")
@@ -3305,7 +3406,7 @@ local function lyricsLoop()
             and attemptedGeneration ~= generation then
             attemptedGeneration = generation
             local trackName = track.name
-            local lyrics, source = onlineLyrics(track)
+            local lyrics, source, lyricsErr = onlineLyrics(track)
 
             if state.running and generation == state.generation
                 and state.current and state.current.name == trackName and #state.lyrics == 0 then
@@ -3313,9 +3414,11 @@ local function lyricsLoop()
                     state.lyrics = lyrics
                     state.lyricsStatus = "online"
                     state.lyricsSource = source or "ONLINE"
+                    state.lyricsError = nil
                 else
                     state.lyricsStatus = "missing"
                     state.lyricsSource = "NONE"
+                    state.lyricsError = lyricsErr
                 end
                 state._frameInvalid = true
             end
