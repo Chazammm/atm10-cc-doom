@@ -227,6 +227,16 @@ $out = Join-Path $CacheDir "sqsh2"
 $converter = Join-Path $work "convert_to_sqsh48.py"
 New-Item -ItemType Directory -Force -Path $src,$out,$CacheDir | Out-Null
 
+# Correctness beats stale conversion-cache reuse. The old builder could leave
+# removed or previously encoded songs in this folder, which then got uploaded
+# into a freshly recreated release. Start every library build from a clean
+# generated-output directory; source audio is still copied only to the temp
+# work folder and never uploaded directly.
+if (Test-Path $out -PathType Container) {
+    Get-ChildItem -LiteralPath $out -Force -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 
 function Get-SqshMeta([string]$Path) {
     $bytes = [IO.File]::ReadAllBytes($Path)
@@ -292,7 +302,7 @@ try {
 
     Write-Host ("Found {0} source track(s)." -f $sources.Count) -ForegroundColor Green
 
-    $raw = "https://raw.githubusercontent.com/$Repo/$Branch/cc-music/tools/convert_to_sqsh48.py?v=3.0.8"
+    $raw = "https://raw.githubusercontent.com/$Repo/$Branch/cc-music/tools/convert_to_sqsh48.py?v=3.7.0"
     Write-Host "Downloading current Profile A+ converter..." -ForegroundColor Cyan
     Invoke-WebRequest -UseBasicParsing -Uri $raw -OutFile $converter
 
@@ -393,15 +403,43 @@ try {
         }
 
         $duration = [double]$totalAudioBytes * 8.0 / [double]$firstMeta.Rate
+
+        # The converter writes a tiny sidecar next to each logical track with
+        # ffprobe title/artist/album metadata. Preserve it in library.json so
+        # the in-game UI and online synced-lyrics matcher do not have to guess
+        # from YouTube-style filenames.
+        $sourceMeta = $null
+        $sidecar = Join-Path $items[0].File.DirectoryName ($group.Stem + ".ccmeta.json")
+        if (Test-Path $sidecar -PathType Leaf) {
+            try {
+                $sourceMeta = Get-Content -LiteralPath $sidecar -Raw | ConvertFrom-Json
+            } catch {
+                Write-Warning ("Could not read metadata sidecar for {0}: {1}" -f $group.Stem,$_.Exception.Message)
+            }
+        }
+
+        $displayTitle = $logicalBase
+        $artist = ""
+        $album = ""
+        if ($sourceMeta) {
+            if ($sourceMeta.title -and -not [string]::IsNullOrWhiteSpace([string]$sourceMeta.title)) {
+                $displayTitle = [string]$sourceMeta.title
+            }
+            if ($sourceMeta.artist) { $artist = ([string]$sourceMeta.artist).Trim() }
+            if ($sourceMeta.album) { $album = ([string]$sourceMeta.album).Trim() }
+        }
+
         $track = [ordered]@{
             name = $logicalName
-            title = $logicalBase
+            title = $displayTitle
             size = $totalSize
             duration = [Math]::Round($duration, 6)
             format = $firstMeta.Format
             rate = $firstMeta.Rate
             channels = $firstMeta.Channels
         }
+        if (-not [string]::IsNullOrWhiteSpace($artist)) { $track["artist"] = $artist }
+        if (-not [string]::IsNullOrWhiteSpace($album)) { $track["album"] = $album }
 
         if ($manifestParts.Count -eq 1) {
             $track.url = $manifestParts[0].url
@@ -465,7 +503,7 @@ try {
         Run $gh @("release","delete",$Tag,"--repo",$Repo,"--yes","--cleanup-tag")
     }
 
-    Run $gh @("release","create",$Tag,"--repo",$Repo,"--title","CC-Music Library","--notes","CC-Music 3.0 / Profile A+ / 48 kHz / SQSH2 stereo library.")
+    Run $gh @("release","create",$Tag,"--repo",$Repo,"--title","CC-Music Library","--notes","CC-Music 3.7 / Profile A+ / 48 kHz / SQSH2 stereo library with track metadata.")
 
     $upload = @($manifestPath) + @(Get-ChildItem -Path $stage -File -Filter "*.sqsh" | Sort-Object Name | ForEach-Object { $_.FullName })
 
