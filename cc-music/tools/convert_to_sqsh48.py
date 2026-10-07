@@ -396,6 +396,12 @@ def main() -> int:
         dst = (args.output / rel).with_suffix(".sqsh")
         if dst.exists() and not args.overwrite:
             print(f"[{idx:>3}/{len(sources)}] SKIP   {src.name}")
+            try:
+                metadata = probe_metadata(ffprobe, src)
+                metadata["existing_encode"] = True
+                write_metadata_sidecar(dst, metadata)
+            except Exception as exc:
+                print(f"              metadata warning: {exc}", file=sys.stderr)
             continue
 
         print(f"[{idx:>3}/{len(sources)}] ENCODE {src.name}")
