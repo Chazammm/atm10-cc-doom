@@ -1,6 +1,6 @@
 -- CC-Music Pocket/Computer Remote
 local PROTOCOL = "ccmusic.v2"
-local VERSION = "3.6.0"
+local VERSION = "3.6.2"
 
 local function nowMs()
     if os.epoch then return os.epoch("utc") end
@@ -66,6 +66,7 @@ local function draw()
         local audio = tostring(status.audio_mode or "MONO")
         local rate = tonumber(status.source_rate) or 0
         if rate > 0 then audio = audio .. " " .. tostring(math.floor(rate / 1000 + 0.5)) .. "k" end
+        if tonumber(status.output_boost or 1) > 1 then audio = audio .. " X" .. tostring(status.output_boost) end
         if status.passthrough then audio = audio .. " DIRECT" end
         term.write(audio:sub(1, math.max(1, w - 2)))
         if h >= 10 then
@@ -92,6 +93,7 @@ local function draw()
         "UP/DN  Volume",
         "S/L    Shuffle/Loop",
         "A      Audio mode",
+        "R      Speaker boost",
         "V      Visualizer",
         "J/K    -10s / +10s",
         "B      Favorite",
@@ -131,6 +133,7 @@ while true do
         elseif a == keys.s then send("shuffle")
         elseif a == keys.l then send("loop")
         elseif a == keys.a then send("audio_mode")
+        elseif a == keys.r then send("output_boost")
         elseif a == keys.v then send("viz_mode")
         elseif a == keys.j then send("seek_rel", -10)
         elseif a == keys.k then send("seek_rel", 10)
