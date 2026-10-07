@@ -1,4 +1,4 @@
-# CC-Music 3.7.0 for ATM10 8.2 / CC:Tweaked
+# CC-Music 3.7.1 for ATM10 8.2 / CC:Tweaked
 
 A large-monitor music player for CC:Tweaked, built around the `Di33le/CC-Music` library and extended with true stereo support.
 
@@ -89,7 +89,7 @@ Legacy format:
 
 ### SQSH2
 
-CC-Music 3.7.0 stereo format:
+CC-Music 3.7.1 stereo format:
 
 - two independent DFPWM channels;
 - 48 kHz;
@@ -349,6 +349,8 @@ Lyrics lookup order:
 1. Embedded same-name `.lrc` data inside SQSH1/SQSH2.
 2. Local cache in `/ccmusic/lyrics`.
 3. Optional online synced-lyrics lookup through LRCLIB when `ccmusic.lyrics_online=true`.
+
+3.7.1 also cleans legacy YouTube-style filenames, strips leading track numbers/IDs, infers `Artist - Title` metadata, tries multiple LRCLIB searches, and exposes the exact HTTP/matching failure instead of silently reporting no lyrics.
 
 The online lookup runs in its own coroutine, so a slow lyrics request does not stall audio streaming. Successful synced lyrics are cached locally and reused on future plays.
 
