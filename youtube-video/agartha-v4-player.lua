@@ -79,6 +79,8 @@ local function cleanup()
     settings.unset("musicvideo.total_frames")
     settings.unset("musicvideo.resume_key")
     settings.unset("musicvideo.segment_base_frame")
+    settings.unset("musicvideo.segment_part")
+    settings.unset("musicvideo.segment_count")
     if previousTouchSetting == nil then
         settings.unset("musicvideo.touch_controls")
     else
@@ -116,6 +118,8 @@ local ok, err = xpcall(function()
 
         settings.set("musicvideo.session_frame", currentFrame)
         settings.set("musicvideo.segment_base_frame", partStart)
+        settings.set("musicvideo.segment_part", part)
+        settings.set("musicvideo.segment_count", #index.frames)
 
         local result, nextHandle, nextError, playbackError
         local function playTask()
