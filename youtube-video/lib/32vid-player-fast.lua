@@ -289,36 +289,76 @@ end
 
 local function drawOSD()
     if not osdVisible and not paused then return end
+
     local total = totalFrames or math.max(currentGlobalFrame + 1, 1)
     local ratio = math.max(0, math.min(1, currentGlobalFrame / math.max(1, total - 1)))
-    local mode = stereoActive and hasStereoAudio and "ST" or "MO"
-    local partLabel = ""
+    local currentText = formatTime(currentGlobalFrame)
+    local totalText = formatTime(total)
+    local partText = ""
     if segmentPart and segmentCount then
-        partLabel = (" P%d/%d"):format(segmentPart, segmentCount)
+        partText = ("P%d/%d"):format(segmentPart, segmentCount)
     end
 
-    -- Row 1 is one continuous timeline for the ENTIRE movie, not just the
-    -- currently-open HTTP part. The V4 controller converts a touched global
-    -- frame back into the correct release part/local frame.
-    local leftTime = formatTime(currentGlobalFrame)
-    local rightTime = formatTime(total)
-    local prefix = leftTime .. " ["
-    local suffix = ("] %s%s %3d%% d:%d a:%d"):format(
-        mode, partLabel, math.floor(volume * 100 + 0.5),
-        stats.dropped, stats.adaptiveSkipped)
+    local fg = blitColors[osdLight]
+    local bg = blitColors[osdDark]
+    local topY = math.max(1, th - 2)
+    local progressY = math.max(1, th - 1)
 
-    local barWidth = math.max(20, tw - #prefix - #rightTime - 1 - #suffix)
+    -- Row 1: clean "Now playing" status, deliberately free of debug counters.
+    local title = paused and "AGARTHA V4  |  PAUSED" or "AGARTHA V4"
+    if partText ~= "" then title = title .. "  |  " .. partText end
+    local leftPadTitle = math.max(0, math.floor((tw - #title) / 2))
+    local topLine = fitLine(string.rep(" ", leftPadTitle) .. title)
+    term.setCursorPos(1, topY)
+    term.blit(topLine, string.rep(fg, tw), string.rep(bg, tw))
+
+    -- Row 2: music-player-style timeline. The bar itself is one large touch
+    -- target across the COMPLETE movie. Filled = watched, white marker = now.
+    local sideGap = 2
+    local barX1 = #currentText + sideGap + 1
+    local barX2 = tw - #totalText - sideGap
+    if barX2 <= barX1 then
+        barX1, barX2 = 2, math.max(2, tw - 1)
+    end
+    osdBarX1, osdBarX2 = barX1, barX2
+
+    local barWidth = math.max(1, barX2 - barX1 + 1)
     local playhead = math.floor((barWidth - 1) * ratio + 0.5) + 1
-    local bar = string.rep("=", math.max(0, playhead - 1))
-        .. "|"
-        .. string.rep("-", math.max(0, barWidth - playhead))
 
-    osdBarX1 = #prefix + 1
-    osdBarX2 = osdBarX1 + barWidth - 1
-    local line1 = fitLine(prefix .. bar .. "] " .. rightTime .. " " .. suffix:sub(3))
+    local chars, fgs, bgs = {}, {}, {}
+    for x = 1, tw do
+        chars[x], fgs[x], bgs[x] = " ", fg, bg
+    end
 
+    for i = 1, #currentText do chars[i] = currentText:sub(i, i) end
+    local totalStart = tw - #totalText + 1
+    for i = 1, #totalText do chars[totalStart + i - 1] = totalText:sub(i, i) end
+
+    -- Use current video's darkest/lightest palette entries so the overlay
+    -- remains readable even though V4 changes the terminal palette every frame.
+    for x = barX1, barX2 do
+        local localX = x - barX1 + 1
+        if localX < playhead then
+            chars[x] = " "
+            bgs[x] = fg
+            fgs[x] = fg
+        elseif localX == playhead then
+            chars[x] = "|"
+            bgs[x] = bg
+            fgs[x] = fg
+        else
+            chars[x] = "-"
+            bgs[x] = bg
+            fgs[x] = fg
+        end
+    end
+
+    term.setCursorPos(1, progressY)
+    term.blit(table.concat(chars), table.concat(fgs), table.concat(bgs))
+
+    -- Row 3: only the controls that matter during playback.
     local playLabel = paused and "PLAY" or "PAUSE"
-    local labels = {"<10s", playLabel, "+10s", "VOL-", "VOL+", "INFO", "STOP"}
+    local labels = {"<<10s", playLabel, "10s>>", "VOL-", "VOL+", "INFO", "STOP"}
     local pieces = {}
     for i = 1, 7 do
         local first = math.floor((i - 1) * tw / 7) + 1
@@ -329,17 +369,14 @@ local function drawOSD()
         local rp = math.max(0, sw - lp - #label)
         pieces[i] = string.rep(" ", lp) .. label:sub(1, sw) .. string.rep(" ", rp)
     end
-    local line2 = fitLine(table.concat(pieces))
-    local fg, bg = blitColors[osdLight], blitColors[osdDark]
-    term.setCursorPos(1, math.max(1, th - 1))
-    term.blit(line1, string.rep(fg, tw), string.rep(bg, tw))
+    local controls = fitLine(table.concat(pieces))
     term.setCursorPos(1, th)
-    term.blit(line2, string.rep(fg, tw), string.rep(bg, tw))
+    term.blit(controls, string.rep(fg, tw), string.rep(bg, tw))
 end
 
 local function showOSD()
     osdVisible = true
-    osdUntil = os.epoch("utc") + 5000
+    osdUntil = os.epoch("utc") + 8000
     drawOSD()
 end
 
@@ -350,11 +387,15 @@ local function hideOSD()
     end
 end
 
-local function requestSeek(deltaFrames)
-    local target = math.max(0, currentGlobalFrame + deltaFrames)
+local function requestSeekTo(target)
+    target = math.max(0, math.floor(tonumber(target) or 0))
     if totalFrames then target = math.min(totalFrames - 1, target) end
     controlAction, controlTarget = "seek", target
     stopSpeakers()
+end
+
+local function requestSeek(deltaFrames)
+    requestSeekTo(currentGlobalFrame + (tonumber(deltaFrames) or 0))
 end
 
 local function togglePause()
@@ -378,34 +419,33 @@ local function togglePause()
 end
 
 local function handleTouch(_, x, y)
-    if not touchEnabled then return end
-    if not x or not y then return end
+    if not touchEnabled or not x or not y then return end
 
-    -- First tap reveals the OSD. This prevents an accidental seek while the
-    -- movie itself is being touched. A second tap on the timeline performs
-    -- the seek.
+    -- First tap reveals the clean controls. Further taps operate them.
     if not osdVisible and not paused then
         showOSD()
         return
     end
 
-    osdUntil = os.epoch("utc") + 5000
+    osdUntil = os.epoch("utc") + 8000
 
-    -- The row above the buttons is a touch-seek bar for the full V4 timeline.
-    -- This may jump backwards or forwards across any number of release parts.
-    if y == math.max(1, th - 1)
-        and totalFrames
-        and osdBarX1 and osdBarX2
-        and x >= osdBarX1 and x <= osdBarX2 then
-        local span = math.max(1, osdBarX2 - osdBarX1)
-        local ratio = math.max(0, math.min(1, (x - osdBarX1) / span))
-        local target = math.floor(ratio * math.max(0, totalFrames - 1) + 0.5)
-        requestSeek(target - currentGlobalFrame)
+    -- Full-movie scrub bar: tap anywhere from its left to right edge. This is
+    -- intentionally independent of the current HTTP/release part.
+    if y == math.max(1, th - 1) and totalFrames and osdBarX1 and osdBarX2 then
+        if x >= osdBarX1 and x <= osdBarX2 then
+            local span = math.max(1, osdBarX2 - osdBarX1)
+            local ratio = math.max(0, math.min(1, (x - osdBarX1) / span))
+            requestSeekTo(ratio * math.max(0, totalFrames - 1))
+            return
+        end
+    end
+
+    -- Top OSD row does nothing: touching it should not dismiss the controls.
+    if y == math.max(1, th - 2) then
         return
     end
 
     if y < th then
-        if not paused then hideOSD() end
         return
     end
 
