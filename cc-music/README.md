@@ -1,4 +1,4 @@
-# CC-Music 3.6.0 for ATM10 8.2 / CC:Tweaked
+# CC-Music 3.6.2 for ATM10 8.2 / CC:Tweaked
 
 A large-monitor music player for CC:Tweaked, built around the `Di33le/CC-Music` library and extended with true stereo support.
 
@@ -89,7 +89,7 @@ Legacy format:
 
 ### SQSH2
 
-CC-Music 3.6.0 stereo format:
+CC-Music 3.6.2 stereo format:
 
 - two independent DFPWM channels;
 - 48 kHz;
@@ -321,3 +321,16 @@ New modes:
 The audio format and output path are unchanged: SQSH2 48 kHz stereo still uses DIRECT playback.
 
 CC:Tweaked speakers buffer a single `playAudio` call at a time, so larger chunks are generally more resistant to server/computer lag. The 3.6 defaults are a compromise between that recommendation and responsive visualization.
+
+
+## Speaker boost in 3.6.2
+
+The monitor volume row includes a `BOOST:X1` button. Tap it to cycle:
+
+`X1 -> X2 -> X3 -> X1`
+
+CC:Tweaked accepts speaker stream volume up to 3. The player's normal volume slider remains 0-100%, and the boost multiplies that value before sending it to the speaker, clamped to 3. For example, 100% at X3 sends volume 3, while 50% at X3 sends 1.5.
+
+Minecraft primarily uses values above 1 to extend the audible distance rather than making a nearby speaker dramatically louder. This is therefore intended as a range boost for larger rooms/bases.
+
+Changing boost interrupts and immediately resumes the current audio buffer so Minecraft applies the new stream volume/range reliably. Keyboard `R` and the Rednet remote also cycle the boost.
