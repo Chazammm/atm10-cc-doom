@@ -1,7 +1,7 @@
--- CC-Music 3.0 diagnostics / setup report.
+-- CC-Music 3.7 diagnostics / setup report.
 local function yn(v) return v and "YES" or "NO" end
 
-print("CC-Music 3.6.2 diagnostics")
+print("CC-Music 3.7.0 diagnostics")
 print("------------------------")
 
 local monitor, monitorName = peripheral.find("monitor", function(name) monitorName = name; return true end)
@@ -9,12 +9,12 @@ if monitor then
     pcall(monitor.setTextScale, 0.5)
     local w, h = monitor.getSize()
     print(("Monitor: %s  %dx%d cells @ 0.5"):format(tostring(monitorName or peripheral.getName(monitor)), w, h))
-    if w == 164 and h == 67 then
-        print("Layout : RECOMMENDED (8 wide x 5 high)")
-    elseif w == 164 and h == 81 then
-        print("Layout : EXTRA-TALL (8 wide x 6 high)")
+    if w == 164 and h == 81 then
+        print("Layout : RECOMMENDED (8 wide x 6 high)")
+    elseif w == 164 and h == 67 then
+        print("Layout : SUPPORTED (8 wide x 5 high)")
     else
-        print("Layout : supported, recommended 164x67 (8x5)")
+        print("Layout : supported, recommended 164x81 (8x6)")
     end
 else
     print("Monitor: NOT FOUND")
@@ -40,7 +40,7 @@ print("48k passthrough: " .. yn(settings.get("ccmusic.passthrough_48k") ~= false
 
 write("GitHub library HTTP: ")
 local h, err = http.get("https://api.github.com/repos/Chazammm/atm10-cc-doom/releases/tags/cc-music-library-v1", {
-    ["User-Agent"] = "CC-Music-Diagnostics/3.0",
+    ["User-Agent"] = "CC-Music-Diagnostics/3.7",
     ["Accept"] = "application/vnd.github+json",
 })
 if h then
@@ -88,3 +88,16 @@ print("  Auto SAFE mode  : enabled in player")
 
 local boost = settings.get("ccmusic.output_boost") or 1
 print("Speaker boost: X" .. tostring(boost))
+
+
+print("")
+print("Lyrics:")
+print("  Online fallback : " .. yn(settings.get("ccmusic.lyrics_online") ~= false))
+print("  Cache folder    : /ccmusic/lyrics")
+
+local remoteIds = tostring(settings.get("ccmusic.remote_ids") or "")
+if remoteIds == "" then
+    print("Remote ACL: OPEN (set ccmusic.remote_ids to restrict control)")
+else
+    print("Remote ACL: " .. remoteIds)
+end
