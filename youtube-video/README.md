@@ -160,3 +160,14 @@ agartha-v4 resume
 ```
 
 The complete V4 media is uploaded with `upload-v4.ps1` to the GitHub Release tag `agartha-v4`.
+
+
+## Clean V4 seek bar
+
+Agartha V4 now uses a compact three-row touch overlay inspired by the CC-Music player:
+
+- row 1: title + current part;
+- row 2: current time, full-movie progress bar, total time;
+- row 3: 10-second seek, play/pause, volume, info and stop.
+
+Tap the monitor once to show the overlay, then tap directly on the progress bar to jump anywhere across all V4 release parts.
