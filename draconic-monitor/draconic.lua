@@ -195,17 +195,23 @@ local function setup()
 
     if cfg.mode ~= "display" then
         cfg.storage = promptChoice("Core/Pylon als Energiespeicher:", dev.storages)
-        cfg.detectorIn = promptChoice(
-            "Optional: Energy Detector in der EINGANGSLEITUNG:", dev.detectors, true)
-        local outChoices = {}
-        for _, item in ipairs(dev.detectors) do
-            if item.name ~= cfg.detectorIn then outChoices[#outChoices + 1] = item end
+        local coreMethods = methodsFor(cfg.storage)
+        if coreMethods.getInputPerTick and coreMethods.getOutputPerTick then
+            print("Native Draconic-IN/OUT-Methoden vorhanden.")
+            print("Energy Detector fuer Core-Messung nicht erforderlich.")
+        else
+            cfg.detectorIn = promptChoice(
+                "Optional: Energy Detector in der EINGANGSLEITUNG:", dev.detectors, true)
+            local outChoices = {}
+            for _, item in ipairs(dev.detectors) do
+                if item.name ~= cfg.detectorIn then outChoices[#outChoices + 1] = item end
+            end
+            cfg.detectorOut = promptChoice(
+                "Optional: Energy Detector in der AUSGANGSLEITUNG:", outChoices, true)
+            print("")
+            print("IN/OUT eines Detectors ergibt sich aus der VERKABELUNG.")
+            print("Detectoren messen nur Leitungen, die durch sie laufen.")
         end
-        cfg.detectorOut = promptChoice(
-            "Optional: Energy Detector in der AUSGANGSLEITUNG:", outChoices, true)
-        print("")
-        print("Wichtig: IN/OUT ergibt sich aus der VERKABELUNG.")
-        print("Detectoren messen nur Leitungen, die wirklich durch sie laufen.")
     end
 
     if cfg.mode ~= "sender" then
