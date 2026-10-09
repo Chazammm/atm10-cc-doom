@@ -81,3 +81,7 @@ Die alten Dateien bleiben in `copied-programs/Draconic` unverändert. **Core und
 - CC:Tweaked `energy_storage`: https://tweaked.cc/generic_peripheral/energy_storage.html
 - CC:Tweaked `rednet`: https://tweaked.cc/module/rednet.html
 - Advanced Peripherals v0.8 `energy_detector`: https://docs.advanced-peripherals.de/0.8/peripherals/base_detector/
+
+## Selbsttest / CI
+
+Im Computer mit `draconic.lua selftest` laufen lokale Prüfungen für Paketvalidierung, Größenformatierung und Wertebegrenzung. Im GitHub-Repository prüft der Workflow `.github/workflows/draconic-lua.yml` zusätzlich Lua-Syntax und den Peripheral-Scan mit simulierten Geräten. Das ersetzt keinen realen In-Game-Test der Mod-Peripherals.
