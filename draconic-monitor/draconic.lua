@@ -394,7 +394,9 @@ local function newDashboard(config)
         local onMonitor = config.monitor and peripheral.isPresent(config.monitor)
         local kind = onMonitor and "monitor" or "terminal"
         local host = onMonitor and peripheral.wrap(config.monitor) or term.current()
-        if onMonitor and host.setTextScale then pcall(host.setTextScale, 0.5) end
+        if onMonitor and host.setTextScale and (surface == nil or kind ~= hostKind) then
+            pcall(host.setTextScale, 0.5)
+        end
         local w, h = host.getSize()
         if surface == nil or kind ~= hostKind or w ~= screenW or h ~= screenH then
             hostKind, screenW, screenH = kind, w, h
@@ -623,7 +625,7 @@ local function newDashboard(config)
         local online = state.latest ~= nil
             and (nowMs() - state.receivedAt < HEARTBEAT_MS)
 
-        if w < 72 or h < 28 then
+        if w < 72 or h < 32 then
             compact(w, h, online)
         else
             -- 8x5 monitor, scale 0.5: a broad two-column upper section
