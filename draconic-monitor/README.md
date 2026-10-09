@@ -47,7 +47,7 @@ Pylon und Monitor mit einem Computer verbinden; beim Setup **3) Lokal** wählen.
 
 ## Optionale Advanced-Peripherals-Energy-Detectors
 
-**Ja, sie helfen:** `energy_detector` (ATM10 1.21.1) bietet `getTransferRate()` für den tatsächlichen **FE/t-Durchsatz durch diesen Block**. Sie können aber nicht automatisch zwischen Core-Ein- und -Ausgang unterscheiden: Das legt die **Platzierung** fest. Ein Detector am Eingang und ein zweiter am Ausgang liefern getrennte Werte.
+**OPTIONAL – für den eigentlichen Draconic Core NICHT nötig:** Der Energy Pylon der Draconic-Evolution-Version 1.21 liefert bereits `getInputPerTick()`, `getOutputPerTick()` und `getTransferPerTick()`. Diese nativen Werte erfasst der Monitor automatisch, sobald der Pylon als Peripheral sichtbar ist. Ein `energy_detector` (ATM10 1.21.1) bietet `getTransferRate()` für den tatsächlichen **FE/t-Durchsatz durch diesen Block**. Sie können aber nicht automatisch zwischen Core-Ein- und -Ausgang unterscheiden: Das legt die **Platzierung** fest. Ein Detector am Eingang und ein zweiter am Ausgang liefern getrennte Werte.
 
 ~~~text
 GENERATOR -- FE-Kabel -- [Energy Detector IN] -- FE-Kabel -- Pylon INPUT -- Core
@@ -56,13 +56,13 @@ CORE -- Pylon OUTPUT -- FE-Kabel -- [Energy Detector OUT] -- FE-Kabel -- VERBRAU
 
 Jeden Detector ebenfalls am **Sender** als Peripheral anschließen (Wired Modem oder direkt) und im Setup **IN** oder **OUT** auswählen. Die Energie muss **wirklich durch den Detector** laufen. Alternative Wege (z. B. drahtlose Kristallverbindungen oder Bypässe) werden nicht miterfasst. Der Detector kann wie ein Widerstand/Transferlimit wirken: `getTransferRateLimit()` gibt das konfigurierte Limit an. **Das Monitorprogramm verändert dieses Limit absichtlich nicht**, da das die Versorgung drosseln könnte. Bei Messung = 0 trotz Energiefluss: Kabelrichtung und Detector-Sitz prüfen. Ein Energy Detector *misst Durchsatz*, er liest **nicht** alleine den Speicherstand eines Tier-8-Core.
 
-**Ohne Detectoren** zeigt das Dashboard IN/OUT als nicht verfügbar, aber NET als aus zwei Core-Abfragen geschätzte Speicheränderung pro Tick (nicht als gemessenen Gesamtdurchsatz). Bei enormen Tier-8-Werten können kleinere Änderungen wegen numerischer Genauigkeit untergehen. Keine falsche Aufteilung in IN/OUT wird erfunden.
+**Ohne Detectoren:** Bei einem korrekt angeschlossenen Draconic Energy Pylon zeigt das Dashboard den tatsächlichen **Core-IN / Core-OUT und Core-NET** per nativen Pylon-Methoden. Falls ein anderer Storage diese Methoden nicht unterstützt, bleiben IN/OUT ohne Detector unbekannt und NET wird ersatzweise aus zwei Speichermessungen geschätzt (bei enormen Tier-8-Werten kann das ungenau werden). Es werden keine erfundenen IN/OUT-Werte angezeigt.
 
 ## Anzeige
 
 - Absoluter Speicherstand + Kapazität, Prozentbalken
-- Eingang und Ausgang **nur soweit mit Detector gemessen**
-- NET aus tatsächlicher gespeicherter Differenz zwischen Messzeitpunkten (FE/t)
+- Eingang und Ausgang **direkt vom Draconic Pylon**, andernfalls optional von Detectors
+- NET direkt aus der Draconic-Pylon-Schnittstelle, sonst als Schätzung aus dem Speicherdelta (FE/t)
 - Füllstandsverlauf mit **sichtbarer, variabler Y-Skala**
 - Status ONLINE/OFFLINE nach 5 Sekunden ohne gültige Daten
 - Monitor passt sich an die Größe an; bei genügend Platz Grafik (empfohlen 3x3 oder größer, Textscale 0.5)
@@ -70,7 +70,9 @@ Jeden Detector ebenfalls am **Sender** als Peripheral anschließen (Wired Modem 
 
 ## Fehlersuche
 
-`draconic.lua scan` zeigt sämtliche erreichbaren Peripheral-Typen und verfügbaren Methoden. Wenn der Pylon **nicht** gelistet wird: Wired Modem prüfen, mit Netzwerk verbinden, richtigen Block anklicken und Draconic-Core-Verbindung prüfen. Wenn `getEnergyStored` oder `getEnergy` fehlen, kann dieses Gerät den Speicherstand nicht liefern; den richtigen Pylon oder eine zugängliche Energy-Storage-Schnittstelle verwenden.
+`draconic.lua scan` zeigt sämtliche erreichbaren Peripheral-Typen und verfügbaren Methoden. Wenn `Storage: 0 | Detector: 0` erscheint, aber Monitore und Modems gefunden werden, ist das **kein Beweis, dass der Block fehlerhaft ist**: Wired Modem direkt an die **feste Pylon-Basis** (nicht an die Glaskugel), Networking Cable bis zum Computer, und **Rechtsklick auf das am Pylon befestigte Modem** (peripheres Gerät aktivieren). Das gleiche gilt separat für einen Detector. Ein Energy Detector, der einfach nur neben dem Pylon steht, ist nicht automatisch für den Computer sichtbar. Kontrolliere mit dem CC-Shell-Befehl `peripherals` und erneut mit `draconic.lua scan`. Erst wenn der Pylon als `draconic_rf_storage` oder mit seinen `getEnergyStored`-Methoden sichtbar ist, kann der Monitor lesen.
+
+ Wenn der Pylon **nicht** gelistet wird: Wired Modem prüfen, mit Netzwerk verbinden, richtigen Block anklicken und Draconic-Core-Verbindung prüfen. Wenn `getEnergyStored` oder `getEnergy` fehlen, kann dieses Gerät den Speicherstand nicht liefern; den richtigen Pylon oder eine zugängliche Energy-Storage-Schnittstelle verwenden.
 
 Wenn Display OFFLINE zeigt: Beide Computer angeschaltet? Funkmodems verbunden und in Reichweite? Gleiche Programversion? Im Display-Setup die richtige **Sender-ID** eingegeben? Diese ID filtert versehentliche Fremd-Sender, ist aber **keine kryptographische Authentifizierung** (Rednet lässt Sender-Spoofing zu). Wenn Display ohne gebundene ID betrieben wird, nimmt es gültige Daten jedes erreichbaren Senders desselben Protokolls an.
 
@@ -85,3 +87,5 @@ Die alten Dateien bleiben in `copied-programs/Draconic` unverändert. **Core und
 ## Selbsttest / CI
 
 Im Computer mit `draconic.lua selftest` laufen lokale Prüfungen für Paketvalidierung, Größenformatierung und Wertebegrenzung. Im GitHub-Repository prüft der Workflow `.github/workflows/draconic-lua.yml` zusätzlich Lua-Syntax und den Peripheral-Scan mit simulierten Geräten. Das ersetzt keinen realen In-Game-Test der Mod-Peripherals.
+
+- Draconic-Evolution-Quellcode für Energy-Pylon-Peripheral: https://github.com/Draconic-Inc/Draconic-Evolution/blob/1.21/src/main/java/com/brandon3055/draconicevolution/integration/computers/PeripheralEnergyPylon.java
