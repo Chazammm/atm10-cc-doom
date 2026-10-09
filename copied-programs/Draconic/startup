@@ -1,0 +1,198 @@
+local monitor = peripheral.find("monitor")
+local modem = peripheral.find("modem", function(n, m) return m.isWireless() end)
+
+if not monitor then error("Ingen skarm hittades!") end
+if not modem then error("Inget tradlost modem hittades!") end
+
+rednet.open(peripheral.getName(modem))
+
+monitor.setTextScale(1)
+local w, h = monitor.getSize()
+local win = window.create(monitor, 1, 1, w, h)
+
+local function formatOP(num, isRate)
+    if not num or num == 0 then 
+        return isRate and "0 OP/t" or "0 OP" 
+    end
+    
+    local absNum = math.abs(num)
+    local prefix = num < 0 and "-" or ""
+    local unit = isRate and "OP/t" or "OP"
+    
+    if absNum >= 1e18 then return prefix .. string.format("%.3f Exa %s", absNum / 1e18, unit)
+    elseif absNum >= 1e15 then return prefix .. string.format("%.3f Peta %s", absNum / 1e15, unit)
+    elseif absNum >= 1e12 then return prefix .. string.format("%.3f Tera %s", absNum / 1e12, unit)
+    elseif absNum >= 1e9 then return prefix .. string.format("%.3f Giga %s", absNum / 1e9, unit)
+    elseif absNum >= 1e6 then return prefix .. string.format("%.3f Mega %s", absNum / 1e6, unit)
+    elseif absNum >= 1e3 then return prefix .. string.format("%.3f Kilo %s", absNum / 1e3, unit)
+    else return prefix .. string.format("%.0f %s", absNum, unit) end
+end
+
+local data = { stored = 0, max = 1, input = 0, output = 0, netDelta = 0 }
+local lastReceived = 0
+
+local function drawVBar(x, y, width, height, pct, hasValue, colorFilled, colorBg)
+    local filledHeight = math.floor((pct / 100) * height)
+    if hasValue and filledHeight == 0 then
+        filledHeight = 1
+    end
+
+    for row = 0, height - 1 do
+        local drawY = y + height - 1 - row
+        win.setCursorPos(x, drawY)
+        if row < filledHeight then
+            win.setBackgroundColor(colorFilled)
+        else
+            win.setBackgroundColor(colorBg)
+        end
+        win.write(string.rep(" ", width))
+    end
+    win.setBackgroundColor(colors.black)
+end
+
+parallel.waitForAny(
+    function()
+        while true do
+            local senderId, message, protocol = rednet.receive()
+            if type(message) == "table" and message.stored and message.max then
+                data = message
+                lastReceived = os.epoch("utc")
+            end
+        end
+    end,
+    function()
+        while true do
+            win.setVisible(false)
+            win.setBackgroundColor(colors.black)
+            win.clear()
+
+            -- RAM
+            win.setTextColor(colors.orange)
+            win.setCursorPos(1, 1)
+            win.write("#" .. string.rep("=", w - 2) .. "#")
+            win.setCursorPos(1, h)
+            win.write("#" .. string.rep("=", w - 2) .. "#")
+            for y = 2, h - 1 do
+                win.setCursorPos(1, y)
+                win.setTextColor(y % 2 == 0 and colors.orange or colors.purple)
+                win.write("|")
+                win.setCursorPos(w, y)
+                win.write("|")
+            end
+
+            -- RUBRIK
+            win.setCursorPos(3, 2)
+            win.setTextColor(colors.cyan)
+            win.write("Tier 8 Energy Core")
+
+            win.setCursorPos(3, 3)
+            win.setTextColor(colors.purple)
+            win.write(string.rep("-", w - 4))
+
+            local isOnline = (os.epoch("utc") - lastReceived) < 5000
+
+            if isOnline then
+                local pct = (data.stored / data.max) * 100
+                if pct > 100 then pct = 100 end
+
+                -- OPERATIONAL POTENTIAL & FLÖDESTEXT
+                win.setCursorPos(3, 4)
+                win.setTextColor(colors.cyan)
+                win.write("Operational Potential")
+
+                win.setCursorPos(3, 5)
+                win.setTextColor(colors.yellow)
+                win.write(formatOP(data.stored, false))
+
+                win.setCursorPos(3, 6)
+                win.setTextColor(colors.gray)
+                win.write("Max: " .. formatOP(data.max, false))
+
+                local inputVal = data.input > 0 and data.input or (data.netDelta > 0 and data.netDelta or 0)
+                local outputVal = data.output > 0 and data.output or (data.netDelta < 0 and math.abs(data.netDelta) or 0)
+                local netRate = data.netDelta
+
+                win.setCursorPos(3, 8)
+                win.setTextColor(colors.cyan)
+                win.write("I/O Flow Rate")
+
+                win.setCursorPos(3, 9)
+                win.setTextColor(colors.white)
+                win.write("IN:  ")
+                win.setTextColor(colors.lime)
+                win.write("+" .. formatOP(inputVal, true))
+
+                win.setCursorPos(3, 10)
+                win.setTextColor(colors.white)
+                win.write("OUT: ")
+                win.setTextColor(colors.red)
+                win.write("-" .. formatOP(outputVal, true))
+
+                win.setCursorPos(3, 11)
+                win.setTextColor(colors.white)
+                win.write("NET: ")
+                if netRate > 0 then
+                    win.setTextColor(colors.lime)
+                    win.write("+" .. formatOP(netRate, true))
+                elseif netRate < 0 then
+                    win.setTextColor(colors.red)
+                    win.write(formatOP(netRate, true))
+                else
+                    win.setTextColor(colors.lightGray)
+                    win.write("0 OP/t")
+                end
+
+                -- AVDELARE MOT STAPLARNA
+                win.setCursorPos(3, 12)
+                win.setTextColor(colors.purple)
+                win.write(string.rep("-", w - 4))
+
+                -- LIKA TJOCKA STAPLAR MED STÖRRE MELLANRUM
+                local barY = 14
+                local barHeight = h - barY - 1
+
+                local barWidth = 5  -- Alla staplar är 5 tecken breda
+                local spacing = 4   -- Större mellanrum mellan staplarna
+                
+                local totalBarsWidth = (barWidth * 3) + (spacing * 2)
+                local startX = math.floor((w - totalBarsWidth) / 2) + 1
+
+                local xIn = startX
+                local xCharge = xIn + barWidth + spacing
+                local xOut = xCharge + barWidth + spacing
+
+                local inPct = math.min(100, (inputVal / 100000) * 100)
+                local outPct = math.min(100, (outputVal / 100000) * 100)
+
+                -- STAPEL 1: IN
+                win.setCursorPos(xIn, 13)
+                win.setTextColor(colors.lime)
+                win.write("IN")
+                drawVBar(xIn, barY, barWidth, barHeight, inPct, inputVal > 0, colors.lime, colors.gray)
+
+                -- STAPEL 2: CHARGE
+                win.setCursorPos(xCharge, 13)
+                win.setTextColor(colors.yellow)
+                win.write("CHARGE")
+                drawVBar(xCharge, barY, barWidth, barHeight, pct, data.stored > 0, colors.orange, colors.gray)
+
+                -- STAPEL 3: OUT
+                win.setCursorPos(xOut, 13)
+                win.setTextColor(colors.red)
+                win.write("OUT")
+                drawVBar(xOut, barY, barWidth, barHeight, outPct, outputVal > 0 or netRate < 0, colors.red, colors.gray)
+
+            else
+                win.setCursorPos(3, 6)
+                win.setTextColor(colors.red)
+                win.write("CORE LINK: OFFLINE")
+                win.setCursorPos(3, 8)
+                win.setTextColor(colors.gray)
+                win.write("Awaiting signal from Pylon...")
+            end
+
+            win.setVisible(true)
+            sleep(0.5)
+        end
+    end
+)
