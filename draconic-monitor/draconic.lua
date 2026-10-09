@@ -371,140 +371,358 @@ local function windowSurface(config)
     return term.current()
 end
 
+-- Premium monitor dashboard, designed for 8x5 multiblock monitors at scale 0.5.
+-- Only the display changes: the v2 Rednet packet format is unchanged.
 local function newDashboard(config)
-    local surface = windowSurface(config)
     local history = {}
     local state = { latest = nil, receivedAt = 0, sender = nil }
-    local previousW, previousH = -1, -1
+    local surface, hostKind, screenW, screenH
 
     local function append(packet)
-        history[#history + 1] = clamp(100 * packet.stored / packet.capacity, 0, 100)
+        history[#history + 1] = packet.stored
         while #history > HISTORY_MAX do table.remove(history, 1) end
     end
 
     local function receive(packet, sender)
         if not validPacket(packet) then return end
-        if state.sender and state.sender ~= sender then
-            history = {}
-        end
-        state.latest = packet
-        state.sender = sender
-        state.receivedAt = nowMs()
+        if state.sender ~= nil and state.sender ~= sender then history = {} end
+        state.latest, state.sender, state.receivedAt = packet, sender, nowMs()
         append(packet)
     end
 
-    local function writeAt(x, y, text, fg, bg)
-        local w, h = surface.getSize()
-        if y < 1 or y > h or x > w then return end
-        text = tostring(text or "")
-        if x < 1 then
-            text = text:sub(2 - x)
-            x = 1
-        end
-        text = text:sub(1, w - x + 1)
-        if #text == 0 then return end
-        if fg then surface.setTextColor(fg) end
-        if bg then surface.setBackgroundColor(bg) end
-        surface.setCursorPos(x, y)
-        surface.write(text)
-    end
-
-    local function drawBar(x, y, width, fraction)
-        width = math.max(0, width)
-        if width == 0 then return end
-        local used = clamp(math.floor(clamp(fraction, 0, 1) * width + 0.5), 0, width)
-        writeAt(x, y, string.rep(" ", used), nil, colors.lime)
-        writeAt(x + used, y, string.rep(" ", width - used), nil, colors.gray)
-        surface.setBackgroundColor(colors.black)
-    end
-
-    local function graph(top, bottom, w)
-        local gh = bottom - top + 1
-        if gh < 2 or w < 8 or #history == 0 then return end
-        local n = math.min(#history, w)
-        local start = #history - n + 1
-        local lower, upper = 100, 0
-        for i = start, #history do
-            lower = math.min(lower, history[i])
-            upper = math.max(upper, history[i])
-        end
-        -- Zoom around recent values instead of drawing every bar from 0%.
-        -- Explicit min/max labels ensure the graph is not misleading.
-        local margin = math.max((upper - lower) * 0.1, 0.2)
-        lower = clamp(lower - margin, 0, 100)
-        upper = clamp(upper + margin, 0, 100)
-        if upper <= lower then upper = lower + 0.1 end
-        for x = 1, n do
-            local p = history[start + x - 1]
-            local height = clamp(math.floor((p - lower) / (upper - lower) * gh + 0.5), 0, gh)
-            for dy = 0, height - 1 do
-                writeAt(w - n + x, bottom - dy, " ", nil, colors.cyan)
+    local function refreshSurface()
+        local onMonitor = config.monitor and peripheral.isPresent(config.monitor)
+        local kind = onMonitor and "monitor" or "terminal"
+        local host = onMonitor and peripheral.wrap(config.monitor) or term.current()
+        if onMonitor and host.setTextScale then pcall(host.setTextScale, 0.5) end
+        local w, h = host.getSize()
+        if surface == nil or kind ~= hostKind or w ~= screenW or h ~= screenH then
+            hostKind, screenW, screenH = kind, w, h
+            if window and window.create then
+                surface = window.create(host, 1, 1, w, h, false)
+            else
+                surface = host
             end
         end
-        surface.setBackgroundColor(colors.black)
-        writeAt(1, top, ("%.2f%%"):format(upper), colors.yellow)
-        writeAt(1, bottom, ("%.2f%%"):format(lower), colors.yellow)
+        return w, h
     end
 
-    local function draw()
-        if config.monitor and not peripheral.isPresent(config.monitor) then
-            surface = term.current()
-        elseif config.monitor and peripheral.isPresent(config.monitor)
-            and surface == term.current() then
-            surface = windowSurface(config)
+    local function writeAt(x, y, message, fg, bg)
+        local w, h = screenW, screenH
+        x, y = math.floor(x), math.floor(y)
+        if y < 1 or y > h or x > w then return end
+        message = tostring(message or "")
+        if x < 1 then
+            message = message:sub(2 - x)
+            x = 1
         end
-        local w, h = surface.getSize()
-        if w ~= previousW or h ~= previousH then
-            previousW, previousH = w, h
+        message = message:sub(1, w - x + 1)
+        if message == "" then return end
+        surface.setTextColor(fg or colors.white)
+        surface.setBackgroundColor(bg or colors.black)
+        surface.setCursorPos(x, y)
+        surface.write(message)
+    end
+
+    local function centered(x, width, y, message, fg, bg)
+        message = tostring(message or "")
+        if width <= 0 then return end
+        if #message > width then message = message:sub(1, width) end
+        writeAt(x + math.floor((width - #message) / 2), y, message, fg, bg)
+    end
+
+    local function rule(x, y, width, color, char)
+        if width > 0 then
+            writeAt(x, y, string.rep(char or "-", width), color or colors.gray)
         end
-        surface.setBackgroundColor(colors.black)
-        surface.setTextColor(colors.white)
-        surface.clear()
-        local online = state.latest and nowMs() - state.receivedAt < HEARTBEAT_MS
-        writeAt(1, 1, " DRACONIC | ENERGY CORE ", colors.orange)
-        writeAt(math.max(1, w - 9), 1, online and " ONLINE " or " OFFLINE ",
-            online and colors.lime or colors.red)
-        if h < 9 or w < 20 then
-            writeAt(1, 3, "Monitor zu klein!", colors.red)
-            writeAt(1, 4, "Bitte vergroessern.", colors.gray)
+    end
+
+    local function panel(x, y, width, height, title, accent)
+        if width < 5 or height < 3 then return end
+        accent = accent or colors.purple
+        rule(x, y, width, accent)
+        rule(x, y + height - 1, width, accent)
+        for yy = y + 1, y + height - 2 do
+            writeAt(x, yy, "|", accent)
+            writeAt(x + width - 1, yy, "|", accent)
+        end
+        writeAt(x, y, "+", accent)
+        writeAt(x + width - 1, y, "+", accent)
+        writeAt(x, y + height - 1, "+", accent)
+        writeAt(x + width - 1, y + height - 1, "+", accent)
+        if title and width > #title + 6 then
+            writeAt(x + 2, y, " " .. title .. " ", colors.white, colors.black)
+        end
+    end
+
+    local function fillBar(x, y, width, progress, color)
+        if width <= 0 then return end
+        local amount = clamp(math.floor(width * clamp(progress, 0, 1) + 0.5), 0, width)
+        if amount > 0 then
+            writeAt(x, y, string.rep(" ", amount), colors.white, color)
+        end
+        if amount < width then
+            writeAt(x + amount, y, string.rep(" ", width - amount),
+                colors.white, colors.gray)
+        end
+    end
+
+    local function percentLabel(n)
+        if n >= 1 then return ("%.2f%%"):format(n) end
+        if n >= 0.01 then return ("%.4f%%"):format(n) end
+        if n >= 0.000001 then return ("%.7f%%"):format(n) end
+        if n > 0 then return ("%.2e%%"):format(n) end
+        return "0.00%"
+    end
+
+    local function levelColor(pct)
+        if pct < 5 then return colors.red end
+        if pct < 25 then return colors.orange end
+        if pct < 65 then return colors.yellow end
+        return colors.lime
+    end
+
+    local digits = {
+        ["0"] = { "###", "# #", "###" },
+        ["1"] = { " ##", "  #", "  #" },
+        ["2"] = { "###", " ##", "## " },
+        ["3"] = { "###", " ##", "###" },
+        ["4"] = { "# #", "###", "  #" },
+        ["5"] = { "###", "## ", "###" },
+        ["6"] = { "###", "## ", "###" },
+        ["7"] = { "###", "  #", "  #" },
+        ["8"] = { "###", "###", "###" },
+        ["9"] = { "###", "###", "  #" },
+        ["."] = { "   ", "   ", " # " },
+        ["-"] = { "   ", "###", "   " },
+        ["+"] = { " # ", "###", " # " },
+        ["k"] = { "# #", "## ", "# #" },
+        ["M"] = { "# #", "###", "# #" },
+        ["G"] = { "###", "#  ", "###" },
+        ["T"] = { "###", " # ", " # " },
+        ["P"] = { "###", "###", "#  " },
+        ["E"] = { "###", "## ", "###" },
+    }
+
+    local function bigNumber(x, y, message, color, width)
+        message = tostring(message)
+        local cellWidth = 4
+        if #message * cellWidth > width then
+            writeAt(x, y + 1, message, color)
             return
         end
-        writeAt(1, 2, string.rep("-", w), colors.purple)
+        for row = 1, 3 do
+            local parts = {}
+            for index = 1, #message do
+                local char = message:sub(index, index)
+                local glyph = digits[char]
+                parts[#parts + 1] = (glyph and glyph[row] or "   ") .. " "
+            end
+            writeAt(x, y + row - 1, table.concat(parts), color)
+        end
+    end
+
+    local function graph(x, y, width, height)
+        if height < 5 or width < 18 then return end
+        if #history < 2 then
+            centered(x, width, y + math.floor(height / 2),
+                "Gathering history samples...", colors.gray)
+            return
+        end
+
+        -- Graph the ACTUAL stored OP, not rounded %. This preserves visible
+        -- variation when a Tier-8 core is only 0.000001% full.
+        local labelWidth = math.min(14, math.max(9, math.floor(width * 0.16)))
+        local plotX = x + labelWidth
+        local plotW = width - labelWidth - 1
+        if plotW < 5 then return end
+        local n = math.min(#history, plotW)
+        local first = #history - n + 1
+        local minimum, maximum = history[first], history[first]
+        for i = first + 1, #history do
+            minimum = math.min(minimum, history[i])
+            maximum = math.max(maximum, history[i])
+        end
+        local range = maximum - minimum
+        local margin = math.max(range * 0.15, math.abs(maximum) * 1e-12, 1)
+        local lower = math.max(0, minimum - margin)
+        local upper = maximum + margin
+        if upper <= lower then upper = lower + 1 end
+
+        local middle = math.floor(height / 2)
+        for yy = 0, height - 1 do
+            if yy == 0 or yy == middle or yy == height - 1 then
+                rule(plotX, y + yy, plotW, colors.gray, ".")
+            end
+        end
+        writeAt(x, y, formatEnergy(upper) .. " OP", colors.lightBlue)
+        writeAt(x, y + middle, formatEnergy((lower + upper) / 2), colors.gray)
+        writeAt(x, y + height - 1, formatEnergy(lower) .. " OP", colors.lightBlue)
+
+        local previousY
+        for i = 1, n do
+            local v = history[first + i - 1]
+            local fraction = clamp((v - lower) / (upper - lower), 0, 1)
+            local pointY = y + height - 1
+                - math.floor(fraction * (height - 1) + 0.5)
+            local pointX = plotX + plotW - n + i - 1
+
+            -- Short vertical strokes connect consecutive samples.
+            if previousY and math.abs(previousY - pointY) > 1 then
+                local y1, y2 = math.min(previousY, pointY), math.max(previousY, pointY)
+                for vy = y1 + 1, y2 - 1 do
+                    writeAt(pointX, vy, "|", colors.blue)
+                end
+            end
+            writeAt(pointX, pointY, i == n and "@" or "*",
+                i == n and colors.yellow or colors.cyan)
+            previousY = pointY
+        end
+    end
+
+    local function compact(w, h, online)
+        centered(1, w, 1, "DRACONIC // ENERGY CORE", colors.orange)
+        rule(1, 2, w, colors.purple)
         if not online then
-            writeAt(2, 4, "KEINE AKTUELLEN DATEN", colors.red)
-            writeAt(2, 6, "Warte auf Sender/Core...", colors.lightGray)
-            if state.sender then writeAt(2, 8, "Letzter Sender: #" .. state.sender, colors.gray) end
+            centered(1, w, 4, "OFFLINE - waiting for sender", colors.red)
             return
         end
         local p = state.latest
-        local percent = clamp(100 * p.stored / p.capacity, 0, 100)
-        writeAt(2, 3, "GESPEICHERT", colors.cyan)
-        writeAt(2, 4, formatEnergy(p.stored) .. " FE", colors.yellow)
-        writeAt(2, 5, "MAX: " .. formatEnergy(p.capacity) .. " FE", colors.gray)
-        writeAt(2, 6, ("Fuellstand: %.3f%%"):format(percent), colors.white)
-        drawBar(2, 7, math.max(0, w - 3), percent / 100)
-
+        local pct = clamp(100 * p.stored / p.capacity, 0, 100)
+        writeAt(2, 4, "STORED  " .. formatEnergy(p.stored) .. " OP", colors.yellow)
+        writeAt(2, 5, "MAX     " .. formatEnergy(p.capacity) .. " OP", colors.lightGray)
+        writeAt(2, 6, "CHARGE  " .. percentLabel(pct), levelColor(pct))
+        if h >= 7 then fillBar(2, 7, w - 3, pct / 100, levelColor(pct)) end
+        if h >= 9 then
+            writeAt(2, 9, "IN  " .. (p.input ~= nil
+                and ("+" .. formatEnergy(p.input) .. " OP/t") or "--"), colors.lime)
+        end
+        if h >= 10 then
+            writeAt(2, 10, "OUT " .. (p.output ~= nil
+                and ("-" .. formatEnergy(p.output) .. " OP/t") or "--"), colors.red)
+        end
         if h >= 11 then
-            writeAt(2, 9, "IN : " .. (p.input and ("+" .. formatEnergy(p.input) .. " FE/t")
-                or "-- (kein Sensor)"), p.input and colors.lime or colors.gray)
-            writeAt(2, 10, "OUT: " .. (p.output and ("-" .. formatEnergy(p.output) .. " FE/t")
-                or "-- (kein Sensor)"), p.output and colors.red or colors.gray)
-            local label = p.net and
-                ((p.net >= 0 and "+" or "") .. formatEnergy(p.net) .. " FE/t")
-                or "-- (erste Messung)"
-            writeAt(2, 11, "NET: " .. label, p.net and (p.net >= 0 and colors.lime or colors.red) or colors.gray)
+            writeAt(2, 11, "NET " .. (p.net ~= nil
+                and ((p.net >= 0 and "+" or "") .. formatEnergy(p.net) .. " OP/t")
+                or "--"), p.net ~= nil and (p.net < 0 and colors.red or colors.lime)
+                or colors.gray)
         end
-        if h >= 17 then
-            writeAt(2, 13, "VERLAUF  | Fuellstand (%)", colors.cyan)
-            graph(15, h - 2, w)
-        elseif h >= 13 then
-            writeAt(2, h - 1, "Verlauf: groesseren Monitor nutzen", colors.gray)
+        if h >= 13 then
+            writeAt(2, h, "ONLINE | Sender #" .. tostring(state.sender), colors.lime)
         end
-        local sourceInfo = (p.inputSource == "pylon" or p.outputSource == "pylon")
-            and "Core" or (p.inputSource or p.outputSource or "kein Sensor")
-        writeAt(2, h, "Quelle #" .. tostring(state.sender or p.source or os.getComputerID())
-            .. " | I/O=" .. tostring(sourceInfo)
-            .. " | NET=" .. (p.netSource or "delta"), colors.lightGray)
+    end
+
+    local function draw()
+        local w, h = refreshSurface()
+        if surface.setVisible then surface.setVisible(false) end
+        surface.setBackgroundColor(colors.black)
+        surface.setTextColor(colors.white)
+        surface.clear()
+        if surface.setCursorBlink then surface.setCursorBlink(false) end
+
+        local online = state.latest ~= nil
+            and (nowMs() - state.receivedAt < HEARTBEAT_MS)
+
+        if w < 72 or h < 28 then
+            compact(w, h, online)
+        else
+            -- 8x5 monitor, scale 0.5: a broad two-column upper section
+            -- and an equally broad live stored-energy history.
+            writeAt(1, 1, string.rep(" ", w), colors.white, colors.purple)
+            writeAt(3, 1, " DRACONIC // ENERGY CONTROL CENTER ",
+                colors.white, colors.purple)
+            writeAt(w - 10, 1, online and " ONLINE  " or " OFFLINE ",
+                online and colors.lime or colors.red, colors.black)
+            rule(1, 2, w, colors.orange, "=")
+            writeAt(3, 3, "TIER VIII   /   OP TELEMETRY", colors.cyan)
+            writeAt(w - 23, 3, "LIVE ENERGY NETWORK", colors.lightGray)
+
+            local topY = 5
+            local panelH = math.max(16, math.floor((h - 10) * 0.48))
+            panelH = math.min(panelH, h - 17)
+            local leftW = math.floor(w * 0.57)
+            local rightX = leftW + 2
+            local rightW = w - rightX + 1
+            local historyY = topY + panelH + 1
+            local historyH = h - historyY - 2
+
+            panel(1, topY, leftW, panelH, " ENERGY RESERVOIR ", colors.purple)
+            panel(rightX, topY, rightW, panelH, " LIVE POWER FLOW ", colors.orange)
+            panel(1, historyY, w, historyH, " OP HISTORY / AUTO ZOOM ",
+                colors.purple)
+
+            if not online then
+                centered(2, leftW - 2, topY + 5,
+                    "NO LIVE TELEMETRY", colors.red)
+                centered(2, leftW - 2, topY + 7,
+                    "Waiting for sender...", colors.gray)
+                centered(rightX + 1, rightW - 2, topY + 6,
+                    "CORE LINK OFFLINE", colors.red)
+                if state.sender then
+                    writeAt(4, topY + 10,
+                        "Last sender: #" .. tostring(state.sender), colors.gray)
+                end
+            else
+                local p = state.latest
+                local pct = clamp(100 * p.stored / p.capacity, 0, 100)
+                local accent = levelColor(pct)
+                writeAt(4, topY + 2, "STORED OP", colors.cyan)
+                bigNumber(4, topY + 4, formatEnergy(p.stored), colors.yellow,
+                    leftW - 8)
+                writeAt(4, topY + 8, "CAPACITY: " .. formatEnergy(p.capacity) .. " OP",
+                    colors.lightGray)
+                writeAt(4, topY + 10, "CHARGE: " .. percentLabel(pct), accent)
+                fillBar(4, topY + 12, leftW - 7, pct / 100, accent)
+                if pct > 0 and pct < 1 then
+                    writeAt(4, topY + 13, "MICRO CHARGE / BELOW BAR RESOLUTION",
+                        colors.orange)
+                elseif pct <= 5 then
+                    writeAt(4, topY + 13, "LOW RESERVE", colors.red)
+                end
+
+                local rx = rightX + 3
+                writeAt(rx, topY + 2, "ENERGY INPUT", colors.lime)
+                writeAt(rx, topY + 3, p.input ~= nil
+                    and ("+" .. formatEnergy(p.input) .. " OP/t")
+                    or "-- unavailable", p.input ~= nil and colors.lime or colors.gray)
+                rule(rx, topY + 5, rightW - 6, colors.gray)
+
+                writeAt(rx, topY + 6, "ENERGY OUTPUT", colors.red)
+                writeAt(rx, topY + 7, p.output ~= nil
+                    and ("-" .. formatEnergy(p.output) .. " OP/t")
+                    or "-- unavailable", p.output ~= nil and colors.red or colors.gray)
+                rule(rx, topY + 9, rightW - 6, colors.gray)
+
+                writeAt(rx, topY + 10, "NET TRANSFER", colors.cyan)
+                local netColor = p.net ~= nil and
+                    (p.net < 0 and colors.red or colors.lime) or colors.gray
+                writeAt(rx, topY + 11, p.net ~= nil
+                    and ((p.net >= 0 and "+" or "") .. formatEnergy(p.net) .. " OP/t")
+                    or "-- measuring", netColor)
+
+                if historyH >= 7 then
+                    graph(3, historyY + 2, w - 6, historyH - 4)
+                end
+            end
+
+            local ioSource = online and
+                ((state.latest.inputSource == "pylon"
+                  or state.latest.outputSource == "pylon") and "PYLON" or
+                 (state.latest.inputSource or state.latest.outputSource
+                    or "NOT AVAILABLE")) or "---"
+            writeAt(2, h - 1, "SYSTEM STATUS", colors.orange)
+            writeAt(18, h - 1,
+                (online and "CONNECTED  " or "DISCONNECTED  ")
+                .. " | SOURCE: " .. tostring(ioSource)
+                .. " | SENDER #" .. tostring(state.sender or "?"),
+                online and colors.lime or colors.red)
+            writeAt(2, h, "DRACONIC EVOLUTION  /  CC:TWEAKED  /  v2.1",
+                colors.lightGray)
+            writeAt(w - 17, h, "CORE LINK " .. (online and "ACTIVE" or "LOST"),
+                online and colors.cyan or colors.red)
+        end
+
+        if surface.setVisible then surface.setVisible(true) end
     end
 
     return { receive = receive, draw = draw }
