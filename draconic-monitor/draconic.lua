@@ -743,7 +743,7 @@ local function runSender(config)
             rednet.broadcast(packet, PROTOCOL)
             term.setCursorPos(1, 5)
             term.clearLine()
-            print(("%.3f%% | %s FE | NET %s FE/t   ")
+            print(("%.6f%% | %s OP | NET %s OP/t   ")
                 :format(100 * packet.stored / packet.capacity,
                     formatEnergy(packet.stored), formatEnergy(packet.net)))
             term.clearLine()
