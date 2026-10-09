@@ -87,6 +87,16 @@ local function diagnostic()
                 #devices.monitors, #devices.modems))
     if #devices.all == 0 then
         print("Keine Peripherals gefunden. Wired-Modem am Block aktivieren.")
+    elseif #devices.storages == 0 then
+        print("WARNUNG: Kein Energy Pylon/Storage sichtbar.")
+        print("Wired Modem DIREKT an die Pylon-Basis setzen,")
+        print("Modem per Rechtsklick als Peripheral verbinden.")
+        print("Danach 'peripherals' und 'draconic.lua scan' pruefen.")
+    end
+    if #devices.detectors == 0 then
+        print("INFO: Energy Detector ist OPTIONAL.")
+        print("Draconic Pylons koennen IN/OUT direkt melden.")
+        print("Falls Detector gewuenscht: eigenes Wired Modem anschliessen.")
     end
 end
 
@@ -262,36 +272,66 @@ end
 local function newReader(config)
     local reader = { lastEnergy = nil, lastAt = nil }
     function reader.sample()
-        local pair = energyMethodPair(methodsFor(config.storage))
-        if not pair then
+        local availableMethods = methodsFor(config.storage)
+        local storedMethod, capacityMethod = energyMethodPair(availableMethods)
+        if not storedMethod then
             return nil, "Core/Pylon nicht verbunden: " .. tostring(config.storage)
         end
-        local energy = readNumber(config.storage, pair)
-        local capacity = readNumber(config.storage, pair == "getEnergyStored"
-            and "getMaxEnergyStored" or "getEnergyCapacity")
-        if not energy or not capacity or capacity <= 0 or energy < 0 then
+        local energy = readNumber(config.storage, storedMethod)
+        local capacity = readNumber(config.storage, capacityMethod)
+        if energy == nil or capacity == nil or capacity <= 0 or energy < 0 then
             return nil, "Core liefert keine gueltigen Energiewerte."
         end
+
         local at = nowMs()
-        local net = nil
-        if reader.lastEnergy and reader.lastAt and at > reader.lastAt then
+        local calculatedNet
+        if reader.lastEnergy ~= nil and reader.lastAt and at > reader.lastAt then
             local dtTicks = (at - reader.lastAt) / 50
-            if dtTicks > 0 then net = (energy - reader.lastEnergy) / dtTicks end
+            if dtTicks > 0 then calculatedNet = (energy - reader.lastEnergy) / dtTicks end
         end
         reader.lastEnergy, reader.lastAt = energy, at
-        local input, output
-        if config.detectorIn then
-            input = readNumber(config.detectorIn, "getTransferRate")
-            if input then input = math.max(0, input) end
+
+        -- Native Draconic Energy Pylon API reports aggregate core transfer,
+        -- including separate input/output, even for crystal-based networks.
+        local nativeIn = availableMethods.getInputPerTick
+            and readNumber(config.storage, "getInputPerTick") or nil
+        local nativeOut = availableMethods.getOutputPerTick
+            and readNumber(config.storage, "getOutputPerTick") or nil
+        local nativeNet = availableMethods.getTransferPerTick
+            and readNumber(config.storage, "getTransferPerTick") or nil
+
+        local input, output, inputSource, outputSource
+        if nativeIn ~= nil and nativeIn >= 0 then
+            input, inputSource = nativeIn, "pylon"
+        elseif config.detectorIn then
+            local v = readNumber(config.detectorIn, "getTransferRate")
+            if v ~= nil then input, inputSource = math.max(0, v), "detector" end
         end
-        if config.detectorOut then
-            output = readNumber(config.detectorOut, "getTransferRate")
-            if output then output = math.max(0, output) end
+        if nativeOut ~= nil and nativeOut >= 0 then
+            output, outputSource = nativeOut, "pylon"
+        elseif config.detectorOut then
+            local v = readNumber(config.detectorOut, "getTransferRate")
+            if v ~= nil then output, outputSource = math.max(0, v), "detector" end
         end
+
+        -- Prefer the true per-tick core metric over sampled storage delta.
+        -- Delta can be imprecise on very large Tier-8 cores.
+        local net = nativeNet
+        local netSource = "pylon"
+        if net == nil and nativeIn ~= nil and nativeOut ~= nil then
+            net = nativeIn - nativeOut
+        end
+        if net == nil then
+            net = calculatedNet
+            netSource = "delta"
+        end
+
         return {
             app = PROTOCOL, version = VERSION, source = os.getComputerID(),
             stored = energy, capacity = capacity,
             input = input, output = output, net = net,
+            inputSource = inputSource, outputSource = outputSource,
+            netSource = netSource,
             measuredInput = input ~= nil, measuredOutput = output ~= nil,
             sampleAt = at
         }
@@ -454,8 +494,11 @@ local function newDashboard(config)
         elseif h >= 13 then
             writeAt(2, h - 1, "Verlauf: groesseren Monitor nutzen", colors.gray)
         end
+        local sourceInfo = (p.inputSource == "pylon" or p.outputSource == "pylon")
+            and "Core" or (p.inputSource or p.outputSource or "kein Sensor")
         writeAt(2, h, "Quelle #" .. tostring(state.sender or p.source or os.getComputerID())
-            .. " | IN/OUT=Sensor | NET=Delta", colors.lightGray)
+            .. " | I/O=" .. tostring(sourceInfo)
+            .. " | NET=" .. (p.netSource or "delta"), colors.lightGray)
     end
 
     return { receive = receive, draw = draw }
