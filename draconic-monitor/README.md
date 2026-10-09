@@ -63,6 +63,8 @@ Jeden Detector ebenfalls am **Sender** als Peripheral anschließen (Wired Modem 
 Das neue Sci-Fi-Dashboard ist besonders für deinen **8 Blöcke breiten und 5 Blöcke hohen Monitor** ausgelegt. Es setzt die Monitor-Textskalierung bei der ersten Verbindung auf **0.5** und verwendet eine breite Zwei-Spalten-Ansicht mit vollständigem Verlauf.
 
 - Großer digitaler **Stored OP**-Wert, Kapazität, präziser Ladeprozentsatz, Füllstandsbalken
+- **Lesbare Block-Ziffern** statt schmaler `#`-ASCII-Zeichen, mit farbigen Pixel-Flächen
+- **Präzise OP-Achsen** im Graphen, die auch bei minimalen Schwankungen unter einer Billion OP unterscheidbare Werte zeigen
 - Separate **INPUT** (grün), **OUTPUT** (rot) und **NET** (grün/rot) in **OP/t**
 - Direktwerte vom Draconic Pylon, optional andere Energie-Detectoren als Fallback
 - Echte **gespeicherte OP** im Live-Graphen statt gerundeter Prozentwerte; automatische Min/Max-Skala
