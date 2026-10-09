@@ -126,7 +126,7 @@ local function testDisplay(width, height)
     assert(rendered:find("OP/t", 1, true), "no OP/t reading shown")
     assert(rendered:find("3480000000000", 1, true) == nil,
         "unformatted large number")
-    if width >= 72 and height >= 28 then
+    if width >= 72 and height >= 32 then
         assert(rendered:find("ENERGY CONTROL CENTER", 1, true),
             "premium header missing")
         assert(rendered:find("OP HISTORY", 1, true),
@@ -139,7 +139,9 @@ local function testDisplay(width, height)
     end
 end
 testDisplay(109, 43)
+testDisplay(72, 32)
+testDisplay(72, 31)
 testDisplay(48, 17)
 print = originalPrint
-print("Mock scan + selftest + premium dashboard (109x43, 48x17): PASS")
+print("Mock scan + selftest + premium dashboard (109x43, 72x32, 72x31, 48x17): PASS")
 
