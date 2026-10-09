@@ -58,15 +58,34 @@ Jeden Detector ebenfalls am **Sender** als Peripheral anschließen (Wired Modem 
 
 **Ohne Detectoren:** Bei einem korrekt angeschlossenen Draconic Energy Pylon zeigt das Dashboard den tatsächlichen **Core-IN / Core-OUT und Core-NET** per nativen Pylon-Methoden. Falls ein anderer Storage diese Methoden nicht unterstützt, bleiben IN/OUT ohne Detector unbekannt und NET wird ersatzweise aus zwei Speichermessungen geschätzt (bei enormen Tier-8-Werten kann das ungenau werden). Es werden keine erfundenen IN/OUT-Werte angezeigt.
 
-## Anzeige
+## Premium-Dashboard für einen 8x5-Monitor
 
-- Absoluter Speicherstand + Kapazität, Prozentbalken
-- Eingang und Ausgang **direkt vom Draconic Pylon**, andernfalls optional von Detectors
-- NET direkt aus der Draconic-Pylon-Schnittstelle, sonst als Schätzung aus dem Speicherdelta (FE/t)
-- Füllstandsverlauf mit **sichtbarer, variabler Y-Skala**
-- Status ONLINE/OFFLINE nach 5 Sekunden ohne gültige Daten
-- Monitor passt sich an die Größe an; bei genügend Platz Grafik (empfohlen 3x3 oder größer, Textscale 0.5)
-- Bei Monitorverlust Fallback auf das Computer-Terminal
+Das neue Sci-Fi-Dashboard ist besonders für deinen **8 Blöcke breiten und 5 Blöcke hohen Monitor** ausgelegt. Es setzt die Monitor-Textskalierung bei der ersten Verbindung auf **0.5** und verwendet eine breite Zwei-Spalten-Ansicht mit vollständigem Verlauf.
+
+- Großer digitaler **Stored OP**-Wert, Kapazität, präziser Ladeprozentsatz, Füllstandsbalken
+- Separate **INPUT** (grün), **OUTPUT** (rot) und **NET** (grün/rot) in **OP/t**
+- Direktwerte vom Draconic Pylon, optional andere Energie-Detectoren als Fallback
+- Echte **gespeicherte OP** im Live-Graphen statt gerundeter Prozentwerte; automatische Min/Max-Skala
+- Orange/rote Warnung bei wenig Energie; bei extrem kleinen Prozenten wird kein künstlich großer Füllbalken gezeichnet
+- Aufgeräumter Status, Sender-ID, Datenquelle, ONLINE/OFFLINE und flackerärmere Fensterdarstellung
+- Kompaktes Layout auf kleinen Terminals; beim Entfernen des Monitors Fallback auf das Computer-Terminal
+- Bestehendes Rednet-Protokoll **v2 bleibt erhalten**: Du musst den Sender nicht aktualisieren, um das neue Display zu verwenden.
+
+### Nur das Display aktualisieren (bereits installiertes System)
+
+Am **Display-Computer** erst das laufende Programm mit `Ctrl+T` beenden. Danach diese Befehle **einzeln** eingeben:
+
+~~~text
+copy draconic.lua draconic-backup.lua
+delete draconic.lua
+wget https://raw.githubusercontent.com/Chazammm/atm10-cc-doom/main/draconic-monitor/draconic.lua draconic.lua
+draconic.lua
+~~~
+
+Die bestehende `draconic.cfg` bleibt erhalten, daher ist normalerweise **kein erneutes Setup** notwendig. Ein Computer mit Autostart lädt beim nächsten Neustart diese neue Version. Nur wenn die Datei unter einem anderen Namen/Pfad installiert wurde, diesen Pfad entsprechend anpassen.
+
+Der Monitor muss aus mindestens 72 Textspalten und 32 Zeilen bestehen, damit die volle Premium-Ansicht erscheint. Kleinere Displays erhalten automatisch ein kompaktes Layout.
+
 
 ## Fehlersuche
 
