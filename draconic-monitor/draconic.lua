@@ -521,7 +521,25 @@ local function runLocal(config)
 end
 
 local args = { ... }
-if args[1] == "scan" then
+if args[1] == "selftest" then
+    local good = {
+        app = PROTOCOL, version = VERSION, stored = 500,
+        capacity = 1000, input = 0, output = 20, net = -10
+    }
+    assert(validPacket(good), "valid packet")
+    assert(not validPacket({ app = PROTOCOL, version = VERSION,
+        stored = 5, capacity = 0 }), "zero capacity")
+    assert(not validPacket({ app = PROTOCOL, version = VERSION,
+        stored = 50, capacity = 20 }), "over capacity")
+    assert(not validPacket({ app = "other", version = VERSION,
+        stored = 5, capacity = 10 }), "wrong protocol")
+    assert(not validPacket({ app = PROTOCOL, version = VERSION,
+        stored = 5, capacity = 10, input = 0 / 0 }), "NaN rate")
+    assert(formatEnergy(0) == "0", "zero formatting")
+    assert(formatEnergy(1500) == "1.50k", "kilo formatting")
+    assert(clamp(200, 0, 100) == 100, "clamping")
+    print("Draconic Monitor selftest: PASS")
+elseif args[1] == "scan" then
     diagnostic()
 elseif args[1] == "setup" then
     setup()
