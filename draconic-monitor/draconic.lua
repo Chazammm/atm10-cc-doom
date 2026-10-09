@@ -484,43 +484,82 @@ local function newDashboard(config)
         return colors.lime
     end
 
+    -- Five-row block digits. Colour is painted as the background of spaces,
+    -- making the number solid on CC monitors instead of a collection of '#'.
     local digits = {
-        ["0"] = { "###", "# #", "###" },
-        ["1"] = { " ##", "  #", "  #" },
-        ["2"] = { "###", " ##", "## " },
-        ["3"] = { "###", " ##", "###" },
-        ["4"] = { "# #", "###", "  #" },
-        ["5"] = { "###", "## ", "###" },
-        ["6"] = { "###", "## ", "###" },
-        ["7"] = { "###", "  #", "  #" },
-        ["8"] = { "###", "###", "###" },
-        ["9"] = { "###", "###", "  #" },
-        ["."] = { "   ", "   ", " # " },
-        ["-"] = { "   ", "###", "   " },
-        ["+"] = { " # ", "###", " # " },
-        ["k"] = { "# #", "## ", "# #" },
-        ["M"] = { "# #", "###", "# #" },
-        ["G"] = { "###", "#  ", "###" },
-        ["T"] = { "###", " # ", " # " },
-        ["P"] = { "###", "###", "#  " },
-        ["E"] = { "###", "## ", "###" },
+        ["0"] = { "11111", "10001", "10001", "10001", "11111" },
+        ["1"] = { "00100", "01100", "00100", "00100", "01110" },
+        ["2"] = { "11111", "00001", "11111", "10000", "11111" },
+        ["3"] = { "11111", "00001", "01111", "00001", "11111" },
+        ["4"] = { "10001", "10001", "11111", "00001", "00001" },
+        ["5"] = { "11111", "10000", "11111", "00001", "11111" },
+        ["6"] = { "11111", "10000", "11111", "10001", "11111" },
+        ["7"] = { "11111", "00001", "00010", "00100", "00100" },
+        ["8"] = { "11111", "10001", "11111", "10001", "11111" },
+        ["9"] = { "11111", "10001", "11111", "00001", "11111" },
+        ["."] = { "00", "00", "00", "11", "11" },
+        ["-"] = { "00000", "00000", "11111", "00000", "00000" },
+        ["+"] = { "00100", "00100", "11111", "00100", "00100" },
+        ["k"] = { "10001", "10010", "11100", "10010", "10001" },
+        ["M"] = { "10001", "11011", "10101", "10001", "10001" },
+        ["G"] = { "11111", "10000", "10111", "10001", "11111" },
+        ["T"] = { "11111", "00100", "00100", "00100", "00100" },
+        ["P"] = { "11110", "10001", "11110", "10000", "10000" },
+        ["E"] = { "11111", "10000", "11110", "10000", "11111" },
     }
 
-    local function bigNumber(x, y, message, color, width)
+    local function bigNumber(x, y, message, color, maxWidth)
         message = tostring(message)
-        local cellWidth = 4
-        if #message * cellWidth > width then
-            writeAt(x, y + 1, message, color)
+        local glyphRows = { "", "", "", "", "" }
+        for index = 1, #message do
+            local char = message:sub(index, index)
+            local glyph = digits[char] or digits["-"]
+            for r = 1, 5 do
+                glyphRows[r] = glyphRows[r] .. glyph[r] .. "0"
+            end
+        end
+        local width = #glyphRows[1]
+        if width > maxWidth then
+            writeAt(x, y + 2, message .. " OP", color)
             return
         end
-        for row = 1, 3 do
-            local parts = {}
-            for index = 1, #message do
-                local char = message:sub(index, index)
-                local glyph = digits[char]
-                parts[#parts + 1] = (glyph and glyph[row] or "   ") .. " "
+        for row = 1, 5 do
+            local bits = glyphRows[row]
+            local runStart, runVal = 1, bits:sub(1, 1)
+            for pos = 2, #bits + 1 do
+                local val = pos <= #bits and bits:sub(pos, pos) or "X"
+                if val ~= runVal then
+                    local runLength = pos - runStart
+                    writeAt(x + runStart - 1, y + row - 1,
+                        string.rep(" ", runLength), colors.white,
+                        runVal == "1" and color or colors.black)
+                    runStart, runVal = pos, val
+                end
             end
-            writeAt(x, y + row - 1, table.concat(parts), color)
+        end
+    end
+
+    -- Detail labels must distinguish the upper/mid/lower bounds even when
+    -- graph variation is a tiny fraction of a Tier-8 energy core's total OP.
+    local function axisFormatter(upper, lower)
+        local units = {
+            { 1e18, "E" }, { 1e15, "P" }, { 1e12, "T" },
+            { 1e9, "G" }, { 1e6, "M" }, { 1e3, "k" }
+        }
+        local scale, suffix = 1, ""
+        for _, unit in ipairs(units) do
+            if upper >= unit[1] then
+                scale, suffix = unit[1], unit[2]
+                break
+            end
+        end
+        local variation = math.max((upper - lower) / scale, 1e-12)
+        local decimals = clamp(
+            math.ceil(-math.log(variation) / math.log(10)) + 2, 2, 8)
+        decimals = math.floor(decimals)
+        local format = "%." .. decimals .. "f" .. suffix
+        return function(value)
+            return string.format(format, value / scale)
         end
     end
 
@@ -557,9 +596,10 @@ local function newDashboard(config)
                 rule(plotX, y + yy, plotW, colors.gray, ".")
             end
         end
-        writeAt(x, y, formatEnergy(upper) .. " OP", colors.lightBlue)
-        writeAt(x, y + middle, formatEnergy((lower + upper) / 2), colors.gray)
-        writeAt(x, y + height - 1, formatEnergy(lower) .. " OP", colors.lightBlue)
+        local label = axisFormatter(upper, lower)
+        writeAt(x, y, label(upper), colors.lightBlue)
+        writeAt(x, y + middle, label((lower + upper) / 2), colors.gray)
+        writeAt(x, y + height - 1, label(lower), colors.lightBlue)
 
         local previousY
         for i = 1, n do
@@ -669,17 +709,17 @@ local function newDashboard(config)
                 local pct = clamp(100 * p.stored / p.capacity, 0, 100)
                 local accent = levelColor(pct)
                 writeAt(4, topY + 2, "STORED OP", colors.cyan)
-                bigNumber(4, topY + 4, formatEnergy(p.stored), colors.yellow,
-                    leftW - 8)
-                writeAt(4, topY + 8, "CAPACITY: " .. formatEnergy(p.capacity) .. " OP",
+                bigNumber(4, topY + 3, formatEnergy(p.stored),
+                    colors.yellow, leftW - 8)
+                writeAt(4, topY + 9, "CAPACITY: " .. formatEnergy(p.capacity) .. " OP",
                     colors.lightGray)
-                writeAt(4, topY + 10, "CHARGE: " .. percentLabel(pct), accent)
-                fillBar(4, topY + 12, leftW - 7, pct / 100, accent)
+                writeAt(4, topY + 11, "CHARGE: " .. percentLabel(pct), accent)
+                fillBar(4, topY + 13, leftW - 7, pct / 100, accent)
                 if pct > 0 and pct < 1 then
-                    writeAt(4, topY + 13, "MICRO CHARGE / BELOW BAR RESOLUTION",
+                    writeAt(4, topY + 14, "MICRO CHARGE / BELOW BAR RESOLUTION",
                         colors.orange)
                 elseif pct <= 5 then
-                    writeAt(4, topY + 13, "LOW RESERVE", colors.red)
+                    writeAt(4, topY + 14, "LOW RESERVE", colors.red)
                 end
 
                 local rx = rightX + 3
